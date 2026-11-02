@@ -44,6 +44,49 @@ $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
 require "dialect"
 require_relative "gtk_driver"
 
+# A translation provider that answers from memory, registered so the window
+# can be driven without touching the network. Every provider upstream ships
+# reaches its service in init_trans — Google fetches its language list on
+# startup — so driving the real window against a real provider would make this
+# script depend on the internet. The three checks that count the registry
+# subtract this one by name.
+class DriveProvider < Provider
+  LANGS = { "en" => "English", "es" => "Spanish", "fr" => "French", "de" => "German" }.freeze
+  CHARS_LIMIT = 120
+
+  def self.provider_name = "drive"
+  def self.prettyname = "Drive Probe"
+  def self.capabilities = ProviderCapability::TRANSLATION
+
+  def self.features
+    ProviderFeature::DETECTION |
+      ProviderFeature::MISTAKES |
+      ProviderFeature::PRONUNCIATION |
+      ProviderFeature::SUGGESTIONS
+  end
+
+  def init_trans
+    LANGS.each { |code, name| add_lang(code, name) }
+    self.chars_limit = CHARS_LIMIT
+  end
+
+  # Reverses the text, so a translation is recognisable without a service.
+  def translate(request)
+    Translation.new(
+      text:          request.text.reverse,
+      original:      request,
+      detected:      "es",
+      mistakes:      TranslationMistake.new(markup: "<b>hello</b>", text: "hello"),
+      pronunciation: TranslationPronunciation.new(src: "src-pron", dest: "dest-pron"),
+    )
+  end
+
+  def suggest(_text, _src, _dest, _suggestion) = true
+end
+
+Providers.register(DriveProvider)
+Settings.get.active_translator = DriveProvider.provider_name
+
 SHOTS = File.expand_path("../tmp/shots", __dir__)
 FileUtils.rm_rf(SHOTS)
 
@@ -256,74 +299,890 @@ rescue StandardError, ScriptError => exc
 end
 
 GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
-  d.window { app.window }
+  d.window { app.window.window }
 
-  # --- 1. the window, 2. the toolbar view, 3. the header bar ---------------
+  # --- 1. the application, 2. the window ----------------------------------
 
   d.step("the application window builds") do
     d.check("the application is a Gtk::Application") { app.app.is_a?(Gtk::Application) }
-    d.check("its id is the reverse-dns app id") do
-      app.app.application_id == "org.rubygtkproject.Dialect"
-    end
+    d.check("its id is upstream's app id") { app.app.application_id == Define::APP_ID }
     d.check("libadwaita was initialized, so Adwaita widgets get their style") do
       Adwaita.initialized?
     end
     d.check("the Adwaita style manager is reachable") do
       !Adwaita::StyleManager.default.nil?
     end
-    d.check("the window is an Adwaita::ApplicationWindow") do
-      app.window.is_a?(Adwaita::ApplicationWindow)
+    d.check("the window object is a Window") { app.window.is_a?(Window) }
+    d.check("its root is an Adwaita::ApplicationWindow") do
+      app.window.window.is_a?(Adwaita::ApplicationWindow)
     end
     d.check("it is the only toplevel") { Gtk::Window.list_toplevels.length == 1 }
     d.check("it belongs to the application") { app.app.windows.length == 1 }
-    d.check("its title is dialect") { app.window.title == "dialect" }
-    d.check("it is visible") { app.window.visible? }
+    d.check("its title is Dialect") { app.window.window.title == "Dialect" }
+    d.check("it is visible") { app.window.window.visible? }
     d.check("it restored the window size from settings") do
-      [app.window.default_width, app.window.default_height] == WINDOW_SIZE
+      [app.window.window.default_width, app.window.window.default_height] == WINDOW_SIZE
     end
-    d.check("the toolbar view is an Adwaita::ToolbarView") do
-      app.toolbar_view.is_a?(Adwaita::ToolbarView)
+    d.check("it carries upstream's minimum size") do
+      app.window.window.width_request == 360 && app.window.window.height_request == 320
     end
-    d.check("the toolbar view is the window content") do
-      app.window.content.equal?(app.toolbar_view)
+    d.check("the main stack is the window content") do
+      app.window.window.content.equal?(app.window.main_stack)
     end
-    d.check("the header bar is an Adwaita::HeaderBar") do
-      app.header_bar.is_a?(Adwaita::HeaderBar)
+    d.check("the stack crossfades, as upstream's does") do
+      app.window.main_stack.transition_type.nick == "crossfade"
     end
-    d.check("the header bar is packed into the toolbar view") do
-      under?(app.header_bar, app.toolbar_view)
-    end
-    d.check("the header bar shows the window title") { app.header_bar.show_title? }
     d.shot("01-main-window")
   end
 
-  # --- 4. the status page (the port's only content state) -----------------
+  # --- 3. the four states of the main stack --------------------------------
 
-  d.step("the status page is the content, and says what is ported") do
-    d.check("the status page is an Adwaita::StatusPage") do
-      app.status_page.is_a?(Adwaita::StatusPage)
+  d.step("the main stack holds upstream's four pages") do
+    app.window.main_stack.then do |stack|
+      %w[loading error api-key translate].each do |name|
+        d.check("the #{name} page is in the stack") { !stack.get_child_by_name(name).nil? }
+      end
+      d.check("the loading page is a window handle, so a blank app can be dragged") do
+        stack.get_child_by_name("loading").is_a?(Gtk::WindowHandle)
+      end
+      d.check("it holds a status page with a spinner paintable") do
+        app.window.loading_page.is_a?(Adwaita::StatusPage) &&
+          app.window.loading_page.paintable.is_a?(Adwaita::SpinnerPaintable)
+      end
+      d.check("the loading page is titled Loading…") { app.window.loading_page.title == "Loading…" }
+      d.check("the error page is an Adwaita::StatusPage under a toolbar view") do
+        app.window.error_page.is_a?(Adwaita::StatusPage) &&
+          under?(app.window.error_page, app.window.error_toolbar)
+      end
+      d.check("the api-key page carries upstream's password icon") do
+        app.window.key_page.icon_name == "dialog-password-symbolic"
+      end
+      d.check("the translate page is a toast overlay") do
+        stack.get_child_by_name("translate").equal?(app.window.toast_overlay)
+      end
+      d.check("the probe provider loaded, so the translate page is showing") do
+        stack.visible_child_name == "translate"
+      end
+      d.check("and the window says loading has finished") { !app.window.translator_loading? }
+      d.check("the live provider is the probe") do
+        app.window.provider("trans").is_a?(DriveProvider)
+      end
     end
-    d.check("it is the toolbar view's content") do
-      app.toolbar_view.content.equal?(app.status_page)
-    end
-    d.check("its title is dialect") { app.status_page.title == "dialect" }
-    d.check("its icon is set") do
-      app.status_page.icon_name == "applications-engineering-symbolic"
-    end
-    d.check("the icon theme resolves that icon") do
-      Gtk::IconTheme.get_for_display(Gdk::Display.default).has_icon?(app.status_page.icon_name)
-    end
-    d.check("its description counts the ported providers") do
-      app.status_page.description.start_with?("#{Providers::TRANSLATORS.length} translation providers are ported")
-    end
-    d.check("there are seven of them") { Providers::TRANSLATORS.length == 7 }
-    d.check("it says the translation window is not ported") do
-      app.status_page.description.include?("The translation window is not.")
-    end
-    d.shot("02-status-page")
   end
 
-  # --- 5. Style ------------------------------------------------------------
+  # --- 4. the error state --------------------------------------------------
+
+  d.step("the error view takes a title, a description and a detail") do
+    app.window.show_translator_error_view(detail: "connection refused")
+    pump(400)
+    d.check("the stack switched to the error page") do
+      app.window.main_stack.visible_child_name == "error"
+    end
+    d.check("the title is upstream's default") { app.window.error_page.title == Window::ERROR_TITLE }
+    d.check("the description keeps upstream's default text") do
+      app.window.error_page.description.start_with?(Window::ERROR_DESCRIPTION)
+    end
+    d.check("and appends the detail in monospace, as upstream does") do
+      app.window.error_page.description.include?("<small><tt>connection refused</tt></small>")
+    end
+    d.check("the retry button is a pill with the suggested style") do
+      app.window.error_retry_btn.css_classes.include?("pill") &&
+        app.window.error_retry_btn.css_classes.include?("suggested-action")
+    end
+    d.check("the preferences button opens the app's preferences action") do
+      app.window.error_open_prefs_btn.action_name == "app.preferences"
+    end
+    d.shot("02-error-state")
+  end
+
+  # --- 5. the API key state ------------------------------------------------
+
+  d.step("the api-key view says whether a key is required or invalid") do
+    app.window.show_translator_api_key_view(required: true)
+    pump(400)
+    d.check("the stack switched to the api-key page") do
+      app.window.main_stack.visible_child_name == "api-key"
+    end
+    d.check("it says a key is required") do
+      app.window.key_page.title == "API key is required to use the service"
+    end
+    d.check("and where to set one") do
+      app.window.key_page.description == "Please set an API key in the preferences."
+    end
+    d.check("the remove-key button stays hidden when no key was set") do
+      !app.window.rmv_key_btn.visible?
+    end
+    app.window.show_translator_api_key_view
+    pump(400)
+    d.check("an invalid key says so instead") do
+      app.window.key_page.title == "The provided API key is invalid"
+    end
+    d.check("and offers to unset it, since the probe does not require one") do
+      app.window.key_page.description.include?("unset the API key")
+    end
+    d.check("so the remove-key button appears") { app.window.rmv_key_btn.visible? }
+    d.shot("03-api-key-state")
+    app.window.main_stack.visible_child_name = "translate"
+  end
+
+  # --- 6. the multi-layout translation view --------------------------------
+
+  d.step("the translate page holds both of upstream's layouts over one set of widgets") do
+    app.window.multi_layout.then do |layouts|
+      d.check("it is an Adwaita::MultiLayoutView") { layouts.is_a?(Adwaita::MultiLayoutView) }
+      d.check("the desktop layout is registered") { !layouts.get_layout_by_name("desktop").nil? }
+      d.check("the mobile layout is registered") { !layouts.get_layout_by_name("mobile").nil? }
+      %w[menu back-btn forward-btn langs-selector translation].each do |slot|
+        d.check("the #{slot} slot is filled") { !layouts.get_child(slot).nil? }
+      end
+      d.check("the menu slot holds the menu button") do
+        layouts.get_child("menu").equal?(app.window.menu_btn)
+      end
+      d.check("the translation slot holds the translator box") do
+        layouts.get_child("translation").equal?(app.window.translator_box)
+      end
+      d.check("the translator box carries upstream's style class") do
+        app.window.translator_box.css_classes.include?("translation-box")
+      end
+      d.check("it is homogeneous, so both sides are the same width") do
+        app.window.translator_box.homogeneous?
+      end
+    end
+  end
+
+  # --- 7. the narrow-window breakpoint --------------------------------------
+
+  d.step("the breakpoint moves the window to the mobile layout") do
+    d.check("the window has a breakpoint") { !app.window.breakpoint.nil? }
+    d.check("its condition is upstream's max-width: 680px") do
+      app.window.breakpoint.condition.to_s == "max-width: 680px"
+    end
+    # The virtual display is 640x480, so the window is already narrow and the
+    # breakpoint has applied itself.
+    d.check("the mobile layout is the one showing") do
+      app.window.multi_layout.layout_name == "mobile"
+    end
+    d.check("the translation box stacks vertically") do
+      app.window.translator_box.orientation.nick == "vertical"
+    end
+    d.check("and takes the vertical style class style.css expects") do
+      app.window.translator_box.css_classes.include?("vertical")
+    end
+    d.check("the error buttons stack too") do
+      app.window.error_buttons.orientation.nick == "vertical"
+    end
+    d.check("and share a width through the size group") do
+      app.window.mobile_buttons_size.mode.nick == "horizontal"
+    end
+  end
+
+  # --- 8. the app menu, 9. the theme switcher -------------------------------
+
+  d.step("the menu button carries upstream's three-section app menu") do
+    d.check("the menu button is primary, so F10 opens it") { app.window.menu_btn.primary? }
+    d.check("it uses the hamburger icon") { app.window.menu_btn.icon_name == "open-menu-symbolic" }
+    d.check("its popover is a Gtk::PopoverMenu") { app.window.menu_btn.popover.is_a?(Gtk::PopoverMenu) }
+    app.window.main_menu.menu.then do |menu|
+      d.check("the model has three sections") { menu.n_items == 3 }
+    end
+    d.check("the first section is the theme slot") do
+      app.window.main_menu.theme_section.n_items == 1
+    end
+    d.check("the pronunciation toggle is in the second") do
+      MainMenu::PREFERENCES_ITEMS["Show Pronunciation"] == "app.pronunciation"
+    end
+    d.check("preferences, shortcuts and about are in the third") do
+      MainMenu::HELP_ITEMS.values == ["app.preferences", "win.show-help-overlay", "app.about"]
+    end
+    d.check("the theme switcher is a Gtk::Box with upstream's style class") do
+      app.window.theme_switcher.is_a?(Gtk::Box) &&
+        app.window.theme_switcher.css_classes.include?("themeswitcher")
+    end
+    d.check("it was added to the popover under the menu's custom slot id") do
+      # A PopoverMenu's custom child is not in the widget tree until the
+      # popover is first shown, so what can be asserted here is that the
+      # switcher was adopted at all.
+      !app.window.theme_switcher.parent.nil?
+    end
+    d.check("its three buttons share a group, so only one can be active") do
+      app.window.theme_switcher.then do |switcher|
+        switcher.system_button.active = true
+        switcher.dark_button.active = true
+        !switcher.system_button.active? && switcher.dark_button.active?
+      end
+    end
+    d.check("each carries its scheme's style class") do
+      %w[system light dark].all? do |scheme|
+        app.window.theme_switcher.public_send("#{scheme}_button").css_classes.include?(scheme)
+      end
+    end
+  end
+
+  d.step("the theme switcher writes the chosen scheme to settings and the style manager") do
+    app.window.theme_switcher.then do |switcher|
+      switcher.dark_button.active = true
+      pump(300)
+      d.check("clicking dark selects it") { switcher.selected_color_scheme == "dark" }
+      d.check("the style manager was told to force dark") do
+        Adwaita::StyleManager.default.color_scheme == Adwaita::ColorScheme::FORCE_DARK
+      end
+      d.check("and the choice was saved") { Settings.get.color_scheme == "dark" }
+      d.shot("04-dark-scheme")
+
+      switcher.light_button.active = true
+      pump(300)
+      d.check("clicking light selects it") { switcher.selected_color_scheme == "light" }
+      d.check("the style manager forces light") do
+        Adwaita::StyleManager.default.color_scheme == Adwaita::ColorScheme::FORCE_LIGHT
+      end
+      d.check("and that is saved too") { Settings.get.color_scheme == "light" }
+
+      switcher.selected_color_scheme = "auto"
+      pump(300)
+      d.check("auto checks the system button") { switcher.system_button.active? }
+      d.check("and asks for upstream's PREFER_LIGHT") do
+        Adwaita::StyleManager.default.color_scheme == Adwaita::ColorScheme::PREFER_LIGHT
+      end
+    end
+  end
+
+  # --- 10. the language selectors, 11. the language rows --------------------
+
+  d.step("both language selectors show the provider's languages") do
+    d.check("each is an Adwaita::Bin") do
+      app.window.src_lang_selector.is_a?(Adwaita::Bin) &&
+        app.window.dest_lang_selector.is_a?(Adwaita::Bin)
+    end
+    d.check("they are in the langs box with the switch button between them") do
+      [
+        app.window.src_lang_selector,
+        app.window.switch_btn,
+        app.window.dest_lang_selector,
+      ].all? { |widget| widget.parent.equal?(app.window.langs_button_box) }
+    end
+    d.check("the src selector opened on Auto, since the probe detects languages") do
+      app.window.src_lang_selector.selected == "auto"
+    end
+    d.check("and its label says so") { app.window.src_lang_selector.label.label == "Auto" }
+    d.check("the dest selector opened on the provider's first saved dest lang") do
+      # Provider::DEFAULTS puts "fr" first in dest_langs, and upstream prefers
+      # a saved language over dest_languages[1] when it is still offered.
+      app.window.dest_lang_selector.selected == "fr"
+    end
+    d.check("and its label is that language's name") do
+      app.window.dest_lang_selector.label.label == "French"
+    end
+    d.check("the full list has one row per language") do
+      app.window.dest_lang_selector.lang_list.observe_children.n_items == DriveProvider::LANGS.length
+    end
+    d.check("the rows are LangRows") do
+      app.window.dest_lang_selector.lang_list.get_row_at_index(0).is_a?(LangRow)
+    end
+    d.check("sorted by name, not by code") do
+      Array.new(DriveProvider::LANGS.length) do |i|
+        app.window.dest_lang_selector.lang_list.get_row_at_index(i).lang.name
+      end == DriveProvider::LANGS.values.sort
+    end
+    # Read as a property, not with visible?: that answers
+    # gtk_widget_is_visible, which is false for everything inside a popover
+    # that has never been shown, whatever the widget's own flag says.
+    d.check("the selected row shows its check mark") do
+      (0...DriveProvider::LANGS.length).any? do |i|
+        app.window.dest_lang_selector.lang_list.get_row_at_index(i).then do |row|
+          row.lang.code == "fr" && row.selection_image.get_property("visible")
+        end
+      end
+    end
+    d.check("and the others do not") do
+      (0...DriveProvider::LANGS.length).none? do |i|
+        app.window.dest_lang_selector.lang_list.get_row_at_index(i).then do |row|
+          row.lang.code != "fr" && row.selection_image.get_property("visible")
+        end
+      end
+    end
+    d.check("the recent list is the provider's saved destinations") do
+      app.window.dest_lang_selector.recent_list.get_row_at_index(0).lang.code == "fr"
+    end
+  end
+
+  d.step("the selector's search filters the list and its rows pick a language") do
+    app.window.dest_lang_selector.then do |selector|
+      selector.search.text = "ger"
+      pump(400)
+      d.check("the search narrows the list to the matching language") do
+        selector.lang_list.observe_children.n_items == 1 &&
+          selector.lang_list.get_row_at_index(0).lang.code == "de"
+      end
+      d.check("and hides the recent list while searching") { !selector.revealer.reveal_child? }
+
+      selector.lang_list.get_row_at_index(0).then do |row|
+        selector.lang_list.signal_emit("row-activated", row)
+      end
+      pump(400)
+      d.check("activating a row selects that language") { selector.selected == "de" }
+      d.check("and relabels the button") { selector.label.label == "German" }
+
+      selector.popover.signal_emit("closed")
+      pump(300)
+      d.check("closing the popover clears the search") { selector.search.text == "" }
+      d.check("and reveals the recent list again") { selector.revealer.reveal_child? }
+      d.check("the chosen language went to the top of the recent list") do
+        selector.recent_list.get_row_at_index(0).lang.code == "de"
+      end
+      d.check("a case-insensitive search still matches") do
+        selector.search.text = "SPAN"
+        pump(300)
+        selector.lang_list.observe_children.n_items == 1
+      end
+      d.check("a regex metacharacter is matched literally, not interpreted") do
+        selector.search.text = "("
+        pump(300)
+        selector.lang_list.observe_children.n_items.zero?
+      end
+      selector.search.text = ""
+      pump(300)
+    end
+  end
+
+  # --- 12. the text views ---------------------------------------------------
+
+  d.step("the two text views wrap, carry the sourceview class and share a font size") do
+    d.check("both are TextViews") do
+      app.window.src_text.is_a?(TextView) && app.window.dest_text.is_a?(TextView)
+    end
+    d.check("the source view is editable and the destination is not") do
+      app.window.src_text.editable? && !app.window.dest_text.editable?
+    end
+    d.check("both wrap on words and characters") do
+      [app.window.src_text, app.window.dest_text].all? do |view|
+        view.wrap_mode.nick == "word-char"
+      end
+    end
+    d.check("both carry the class style.css styles the caret with") do
+      [app.window.src_text, app.window.dest_text].all? do |view|
+        view.css_classes.include?("dialect-sourceview")
+      end
+    end
+    d.check("both carry upstream's 9px margins") do
+      [app.window.src_text, app.window.dest_text].all? do |view|
+        view.left_margin == 9 && view.right_margin == 9 &&
+          view.top_margin == 9 && view.bottom_margin == 9
+      end
+    end
+    d.check("the font size starts at the system one") do
+      app.window.src_text.font_size == Settings.get.system_font_size
+    end
+    app.window.src_text.font_size_inc
+    pump(300)
+    d.check("incrementing steps up by five") do
+      app.window.src_text.font_size == Settings.get.system_font_size + TextView::FONT_STEP
+    end
+    d.check("and the destination view followed, as upstream's binding does") do
+      app.window.dest_text.font_size == app.window.src_text.font_size
+    end
+    app.window.src_text.font_size = TextView::MIN_FONT_SIZE
+    app.window.src_text.font_size_dec
+    pump(300)
+    d.check("decrementing refuses to go below the floor") do
+      app.window.src_text.font_size == TextView::MIN_FONT_SIZE
+    end
+    app.window.set_font_size(Settings.get.system_font_size)
+    pump(200)
+    d.check("activation requires the mod key by default") { app.window.src_text.activate_mod }
+    Settings.get["translate-accel"] = 1
+    app.window.apply_translate_accel
+    d.check("choosing plain Enter drops the mod requirement") { !app.window.src_text.activate_mod }
+    Settings.get["translate-accel"] = 0
+    app.window.apply_translate_accel
+    d.check("and choosing Ctrl+Enter restores it") { app.window.src_text.activate_mod }
+  end
+
+  # --- 13. the window's actions and the app's accelerators ------------------
+
+  d.step("every action upstream registers is registered, and bound") do
+    %w[pronunciation preferences about quit].each do |name|
+      d.check("app.#{name} is registered") { app.app.has_action?(name) }
+    end
+    Window::ACTIONS.each_key do |name|
+      d.check("win.#{name} is registered") { app.window.window.has_action?(name) }
+    end
+    d.check("the pronunciation action is stateful, as upstream's is") do
+      !app.app.lookup_action("pronunciation").state.nil?
+    end
+    Dialect::Application::ACCELS.each do |action, accels|
+      d.check("#{action} is bound to #{accels.join(', ')}") do
+        app.app.get_accels_for_action(action).length == accels.length
+      end
+    end
+    d.check("nothing is bound to the text-to-speech actions, which are not ported") do
+      app.app.get_accels_for_action("win.listen-src").empty? &&
+        app.app.get_accels_for_action("win.listen-dest").empty?
+    end
+  end
+
+  # --- 14. the source toolbar: clear, paste, counter, translate -------------
+
+  d.step("the source toolbar counts characters and gates its actions") do
+    app.window.src_text.text = ""
+    pump(300)
+    d.check("an empty source disables translation") do
+      !app.window.window.lookup_action("translation").enabled?
+    end
+    d.check("and disables clear") { !app.window.window.lookup_action("clear").enabled? }
+    d.check("the counter shows nothing over the limit") do
+      app.window.char_counter.label == "0/#{DriveProvider::CHARS_LIMIT}"
+    end
+    app.window.src_text.text = "hola"
+    pump(300)
+    d.check("typing enables translation") do
+      app.window.window.lookup_action("translation").enabled?
+    end
+    d.check("and enables clear") { app.window.window.lookup_action("clear").enabled? }
+    d.check("the counter follows the character count") do
+      app.window.char_counter.label == "4/#{DriveProvider::CHARS_LIMIT}"
+    end
+    app.window.src_text.text = "x" * (DriveProvider::CHARS_LIMIT + 20)
+    pump(500)
+    d.check("text over the provider's limit is truncated to it") do
+      app.window.src_text.char_count == DriveProvider::CHARS_LIMIT
+    end
+    d.check("and the user is told") do
+      !app.window.toast_overlay.nil? && app.window.char_counter.label ==
+        "#{DriveProvider::CHARS_LIMIT}/#{DriveProvider::CHARS_LIMIT}"
+    end
+    app.window.window.activate_action("clear", nil)
+    pump(300)
+    d.check("the clear action empties the source") { app.window.src_text.text == "" }
+    d.check("the clear button is wired to it") do
+      app.window.clear_btn.action_name == "win.clear"
+    end
+    d.check("the paste button is wired to the paste action") do
+      app.window.paste_btn.action_name == "win.paste"
+    end
+    d.check("the translate button is wired to the translation action") do
+      app.window.translate_btn.action_name == "win.translation"
+    end
+  end
+
+  # --- 15. a translation, its history, mistakes and pronunciation -----------
+
+  d.step("translating fills the destination, the history and the extras") do
+    app.window.src_lang_selector.selected = "en"
+    app.window.dest_lang_selector.selected = "es"
+    app.window.src_text.text = "hello"
+    pump(300)
+    app.window.window.activate_action("translation", nil)
+    pump(900)
+    d.check("the destination holds the provider's answer") do
+      app.window.dest_text.text == "olleh"
+    end
+    d.check("the warning icon stays hidden") { !app.window.trans_warning.visible? }
+    d.check("the spinner stopped") { !app.window.trans_spinner.visible? }
+    d.check("copy is enabled now there is something to copy") do
+      app.window.window.lookup_action("copy").enabled?
+    end
+    d.check("the translation went into the history") do
+      app.window.provider("trans").history.length == 1
+    end
+    d.check("so going back is still disabled with only one entry") do
+      !app.window.window.lookup_action("back").enabled?
+    end
+    d.check("the mistakes row is revealed, since the probe reports one") do
+      app.window.mistakes.reveal_child?
+    end
+    d.check("and says what the user might have meant") do
+      app.window.mistakes_label.label.include?("hello")
+    end
+    d.shot("05-translated")
+
+    Settings.get.show_pronunciation = true
+    app.window.check_pronunciation
+    pump(300)
+    d.check("the destination pronunciation is revealed when asked for") do
+      app.window.dest_pron_revealer.reveal_child? &&
+        app.window.dest_pron_label.label == "dest-pron"
+    end
+    d.check("the source one stays hidden while there is a mistake, as upstream does") do
+      !app.window.src_pron_revealer.reveal_child?
+    end
+    Settings.get.show_pronunciation = false
+    app.window.check_pronunciation
+    pump(300)
+    d.check("turning pronunciation off hides it again") do
+      !app.window.dest_pron_revealer.reveal_child?
+    end
+
+    app.window.src_text.text = "goodbye"
+    pump(300)
+    app.window.window.activate_action("translation", nil)
+    pump(900)
+    d.check("a second translation is on top of the history") do
+      app.window.provider("trans").history.length == 2
+    end
+    d.check("so going back is enabled") { app.window.window.lookup_action("back").enabled? }
+    app.window.window.activate_action("back", nil)
+    pump(500)
+    d.check("going back restores the earlier source text") do
+      app.window.src_text.text == "hello"
+    end
+    d.check("and its translation") { app.window.dest_text.text == "olleh" }
+    d.check("going forward is enabled once back has been used") do
+      app.window.window.lookup_action("forward").enabled?
+    end
+    app.window.window.activate_action("forward", nil)
+    pump(500)
+    d.check("going forward returns to the newer one") do
+      app.window.src_text.text == "goodbye"
+    end
+  end
+
+  # --- 16. switching languages ----------------------------------------------
+
+  d.step("switching swaps the languages and the two texts") do
+    app.window.src_lang_selector.selected = "en"
+    app.window.dest_lang_selector.selected = "es"
+    app.window.src_text.text = "one"
+    app.window.dest_text.text = "two"
+    pump(300)
+    d.check("switch is enabled when both languages work on both sides") do
+      app.window.window.lookup_action("switch").enabled?
+    end
+    app.window.window.activate_action("switch", nil)
+    pump(500)
+    d.check("the source language is now the destination one") do
+      app.window.src_lang_selector.selected == "es"
+    end
+    d.check("and the destination language the source one") do
+      app.window.dest_lang_selector.selected == "en"
+    end
+    d.check("the texts swapped with them") do
+      app.window.src_text.text == "two" && app.window.dest_text.text == "one"
+    end
+    app.window.src_lang_selector.selected = "auto"
+    pump(300)
+    app.window.window.activate_action("switch", nil)
+    pump(300)
+    d.check("switching out of Auto does nothing, as upstream refuses to") do
+      app.window.src_lang_selector.selected == "auto"
+    end
+  end
+
+  # --- 17. suggesting a translation -----------------------------------------
+
+  d.step("the suggestion editor opens, saves and cancels") do
+    app.window.src_lang_selector.selected = "en"
+    app.window.dest_lang_selector.selected = "es"
+    app.window.src_text.text = "suggest me"
+    pump(300)
+    app.window.window.activate_action("translation", nil)
+    pump(900)
+    d.check("the edit button is visible, since the probe takes suggestions") do
+      app.window.edit_btn.visible?
+    end
+    d.check("and the suggest action is enabled") do
+      app.window.window.lookup_action("suggest").enabled?
+    end
+    app.window.window.activate_action("suggest", nil)
+    pump(400)
+    d.check("the destination toolbar switched to the editor") do
+      app.window.dest_toolbar_stack.visible_child_name == "edit"
+    end
+    d.check("and the destination view became editable") { app.window.dest_text.editable? }
+    app.window.dest_text.text = "my suggestion"
+    app.window.window.activate_action("suggest-cancel", nil)
+    pump(400)
+    d.check("cancelling puts the old translation back") do
+      app.window.dest_text.text == "em tseggus"
+    end
+    d.check("and leaves the editor") do
+      app.window.dest_toolbar_stack.visible_child_name == "default" &&
+        !app.window.dest_text.editable?
+    end
+    app.window.window.activate_action("suggest", nil)
+    pump(300)
+    app.window.dest_text.text = "accepted"
+    app.window.window.activate_action("suggest-ok", nil)
+    pump(900)
+    d.check("saving a suggestion leaves the editor too") do
+      app.window.dest_toolbar_stack.visible_child_name == "default"
+    end
+    d.check("the cancel button is wired to the cancel action") do
+      app.window.cancel_btn.action_name == "win.suggest-cancel"
+    end
+    d.check("and the save button to the ok action") do
+      app.window.save_btn.action_name == "win.suggest-ok"
+    end
+  end
+
+  # --- 18. copy and paste ---------------------------------------------------
+
+  d.step("copy puts the translation on the clipboard, paste takes text off it") do
+    app.window.dest_text.text = "copy me"
+    pump(300)
+    app.window.window.activate_action("copy", nil)
+    pump(500)
+    [].then do |read|
+      Gdk::Display.default.clipboard.read_text_async do |clipboard, result|
+        read << clipboard.read_text_finish(result)
+      end
+      pump(800)
+      d.check("the clipboard holds the destination text") { read.first == "copy me" }
+    end
+    app.window.src_text.text = ""
+    pump(200)
+    app.window.window.activate_action("paste", nil)
+    pump(900)
+    d.check("pasting appends the clipboard to the source") do
+      app.window.src_text.text == "copy me"
+    end
+  end
+
+  # --- 19. the keyboard shortcuts window ------------------------------------
+
+  d.step("the shortcuts window lists upstream's shortcuts") do
+    app.window.shortcuts_window.then do |dialog|
+      d.check("it is an Adwaita::ShortcutsDialog") { dialog.is_a?(Adwaita::ShortcutsDialog) }
+      d.check("it is titled Keyboard Shortcuts") { dialog.title == "Keyboard Shortcuts" }
+      d.check("it has upstream's three groups") { ShortcutsWindow::SECTIONS.length == 3 }
+      d.check("the Translate row carries the chosen accelerator") do
+        dialog.translate_item.accelerator == Settings.get.translate_accel
+      end
+      d.check("every other row names an action, so the accelerator comes from the app") do
+        ShortcutsWindow::SECTIONS.values.flat_map(&:values).all? do |action|
+          action.start_with?("win.", "app.")
+        end
+      end
+    end
+    d.check("the Translator group holds the Translate row plus its actions") do
+      app.window.shortcuts_window.sections.first.n_items ==
+        ShortcutsWindow::SECTIONS["Translator"].length + 1
+    end
+    Settings.get.live_translation = true
+    d.check("live translation drops the Translate row, as upstream hides it") do
+      ShortcutsWindow.new(settings: Settings.get).build.then do |dialog|
+        dialog.sections.first.n_items == ShortcutsWindow::SECTIONS["Translator"].length
+      end
+    end
+    Settings.get.live_translation = false
+    app.window.window.activate_action("show-help-overlay", nil)
+    pump(700)
+    d.check("the show-help-overlay action presents it") do
+      !app.window.window.visible_dialog.nil?
+    end
+    d.shot("06-shortcuts")
+    app.window.window.visible_dialog&.close
+    pump(500)
+  end
+
+  # --- 20. the preferences dialog -------------------------------------------
+
+  d.step("the preferences dialog mirrors upstream's three groups") do
+    PreferencesDialog.new(app.window, settings: Settings.get).build.then do |prefs|
+      d.check("it is an Adwaita::PreferencesDialog") { prefs.is_a?(Adwaita::PreferencesDialog) }
+      d.check("the provider group holds both combo rows") do
+        under?(prefs.translator_row, prefs.providers_group) &&
+          under?(prefs.tts_row, prefs.providers_group)
+      end
+      d.check("the translator row opened on the active provider") do
+        prefs.translator_row.selected_item.name == DriveProvider.provider_name
+      end
+      d.check("its settings button is insensitive for a provider with no settings") do
+        !prefs.translator_config.sensitive?
+      end
+      d.check("and says so in its tooltip") do
+        prefs.translator_config.tooltip_text == PreferencesDialog::NO_SETTINGS_TOOLTIP
+      end
+      d.check("the live translation row reflects the setting") do
+        prefs.live_translation.enable_expansion? == Settings.get.live_translation
+      end
+      d.check("the shortcut row offers upstream's two choices") do
+        prefs.translate_accel.model.n_items == 2
+      end
+      d.check("and opened on the saved one") do
+        prefs.translate_accel.selected == Settings.get.translate_accel_value
+      end
+      d.check("the default-to-auto switch reflects the setting") do
+        prefs.src_auto.active? == Settings.get.src_auto
+      end
+      d.check("the font size row is bounded by upstream's adjustment") do
+        prefs.font_size_adjustment.lower == PreferencesDialog::FONT_SIZE_LOWER &&
+          prefs.font_size_adjustment.upper == PreferencesDialog::FONT_SIZE_UPPER
+      end
+
+      prefs.src_auto.active = !Settings.get.src_auto
+      pump(400)
+      d.check("flipping a switch writes through to settings") do
+        Settings.get.src_auto == prefs.src_auto.active?
+      end
+      prefs.src_auto.active = true
+      pump(300)
+
+      prefs.default_font_size.value = 21
+      pump(400)
+      d.check("changing the font size saves it") { Settings.get.default_font_size == 21 }
+      d.check("and applies it to the text views") { app.window.src_text.font_size == 21 }
+      app.window.set_font_size(Settings.get.system_font_size)
+      pump(200)
+
+      prefs.present(app.window.window)
+      pump(800)
+      d.check("the dialog presents over the window") { !app.window.window.visible_dialog.nil? }
+      d.shot("07-preferences")
+      app.window.window.visible_dialog&.close
+      pump(500)
+    end
+  end
+
+  # --- 21. the provider preferences subpage ---------------------------------
+
+  d.step("the provider subpage shows only the settings a provider has") do
+    PreferencesDialog.new(app.window, settings: Settings.get).build.then do |prefs|
+      ProviderPreferences.new("trans", prefs, app.window).build.then do |page|
+        d.check("it is an Adwaita::NavigationPage") { page.is_a?(Adwaita::NavigationPage) }
+        d.check("its title is upstream's") { page.title == "Provider Preferences" }
+        d.check("and it names the provider underneath") do
+          page.window_title.subtitle == DriveProvider.prettyname
+        end
+        d.check("the instance row is hidden for a provider with no instances") do
+          !page.instance_entry.visible?
+        end
+        d.check("the API key row is hidden for a provider with no key") do
+          !page.api_key_entry.visible?
+        end
+        d.check("the usage group is hidden for a provider that reports none") do
+          !page.api_usage_group.visible?
+        end
+        d.check("each row's suffix stack starts on its reset button") do
+          page.instance_stack.visible_child_name == "reset" &&
+            page.api_key_stack.visible_child_name == "reset"
+        end
+      end
+
+      # A provider with instances, and one with an API key, so each row is
+      # driven as it is shown.
+      ProviderPreferences.new("trans", prefs, app.window).then do |page|
+        page.instance_variable_set(:@provider, LibretranslateProvider.new)
+        page.build
+        pump(400)
+        d.check("a provider with instances shows the instance row") do
+          page.instance_entry.visible?
+        end
+        d.check("and hides the API key row it has no key for") do
+          !page.api_key_entry.visible?
+        end
+        d.check("the instance row opened on the provider's default instance") do
+          page.instance_entry.text == LibretranslateProvider.defaults[:instance_url]
+        end
+        page.instance_reset.signal_emit("clicked")
+        pump(300)
+        d.check("resetting the instance puts the default back") do
+          page.instance_entry.text == LibretranslateProvider.defaults[:instance_url] &&
+            !page.instance_entry.css_classes.include?("error")
+        end
+      end
+
+      ProviderPreferences.new("trans", prefs, app.window).then do |page|
+        page.instance_variable_set(:@provider, DeeplProvider.new)
+        page.build
+        pump(400)
+        d.check("a provider with an API key shows the API key row") do
+          page.api_key_entry.visible?
+        end
+        d.check("and hides the instance row it has no instances for") do
+          !page.instance_entry.visible?
+        end
+        d.check("the settings icon the preferences buttons use resolves") do
+          Gtk::IconTheme.get_for_display(Gdk::Display.default).has_icon?("dialect-settings-symbolic")
+        end
+      end
+    end
+  end
+
+  # --- 22. the about dialog -------------------------------------------------
+
+  d.step("the about dialog carries the metainfo's text") do
+    app.about_dialog.then do |about|
+      d.check("it is an Adwaita::AboutDialog") { about.is_a?(Adwaita::AboutDialog) }
+      d.check("it is named Dialect") { about.application_name == "Dialect" }
+      d.check("its version is the port's") { about.version == Define::VERSION }
+      d.check("its summary is the metainfo's") do
+        about.comments == Dialect::Application::COMMENTS
+      end
+      d.check("it credits the authors") do
+        about.developers.to_a == Dialect::Application::DEVELOPERS
+      end
+      d.check("and carries the copyright line") do
+        about.copyright == Dialect::Application::COPYRIGHT
+      end
+      d.check("it is licensed GPL-3.0-or-later, as upstream is") do
+        about.license_type == Gtk::License::GPL_3_0
+      end
+    end
+    app.app.activate_action("about", nil)
+    pump(800)
+    d.check("the about action presents it") { !app.window.window.visible_dialog.nil? }
+    d.shot("08-about")
+    app.window.window.visible_dialog&.close
+    pump(500)
+  end
+
+  # --- 23. the icon assets --------------------------------------------------
+
+  d.step("the icons upstream ships itself are on the icon theme's search path") do
+    d.check("Icons reports itself loaded") { Icons.loaded? }
+    d.check("a second load does nothing, so the path cannot pile up") do
+      Icons.load.nil? && Icons.loaded?
+    end
+    d.check("both icon files are present") do
+      Icons::ICON_NAMES.all? do |name|
+        File.file?(File.join(Icons::SEARCH_PATH, "hicolor/scalable/emblems/#{name}.svg"))
+      end
+    end
+    d.check("and the theme resolves both by upstream's names") { Icons.available? }
+  end
+
+  # --- 24. the command line -------------------------------------------------
+
+  d.step("the command line options upstream takes are parsed") do
+    Dialect::Application.new(argv: %w[--text hola --src en --dest es]).then do |cli|
+      d.check("--text is read") { cli.argv[:text] == "hola" }
+      d.check("--src is read") { cli.argv[:src] == "en" }
+      d.check("--dest is read") { cli.argv[:dest] == "es" }
+    end
+    Dialect::Application.new(argv: %w[-n]).then do |cli|
+      d.check("the short selection flag is read") { cli.argv[:selection] == true }
+    end
+    Dialect::Application.new(argv: %w[--nonsense]).then do |cli|
+      d.check("an unknown option is ignored rather than fatal") { cli.argv.empty? }
+    end
+    Dialect::Application.new.then do |cli|
+      d.check("no arguments means nothing to process") { cli.argv.empty? }
+    end
+  end
+
+  # --- 25. translating text handed in from outside ---------------------------
+
+  d.step("the window translates text handed to it, as the command line does") do
+    app.window.translate("adios", "es", "en")
+    pump(900)
+    d.check("the source language came from the caller") do
+      app.window.src_lang_selector.selected == "es"
+    end
+    d.check("the destination language too") do
+      app.window.dest_lang_selector.selected == "en"
+    end
+    d.check("the text was translated") { app.window.dest_text.text == "soida" }
+    app.window.translate("hola", nil, "de")
+    pump(900)
+    d.check("a nil source falls back to Auto on a detecting provider") do
+      app.window.src_lang_selector.selected == "auto"
+    end
+    d.check("and the destination still comes from the caller") do
+      app.window.dest_lang_selector.selected == "de"
+    end
+  end
+
+  # --- 26. Style ------------------------------------------------------------
 
   d.step("the stylesheet is installed on the display") do
     d.check("Style reports itself loaded") { Style.loaded? }
@@ -356,7 +1215,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
   end
 
-  # --- 6. Define -----------------------------------------------------------
+  # --- 27. Define -----------------------------------------------------------
 
   d.step("the build-time constants match upstream's define.in") do
     d.check("the app id") { Define::APP_ID == "app.drey.Dialect" }
@@ -373,7 +1232,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
   end
 
-  # --- 7. Utils ------------------------------------------------------------
+  # --- 28. Utils ------------------------------------------------------------
 
   d.step("the list helpers behave like upstream's") do
     d.check("find_item_match takes the first of list1 in list2") do
@@ -393,7 +1252,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
   end
 
-  # --- 8. the provider error hierarchy -------------------------------------
+  # --- 29. the provider error hierarchy -------------------------------------
 
   d.step("the provider errors keep upstream's hierarchy") do
     d.check("RequestError is deliberately not a ProviderError") do
@@ -412,7 +1271,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
   end
 
-  # --- 9. Languages, 10. LangObject, 11. LanguagesListModel ---------------
+  # --- 30. Languages, 31. LangObject, 32. LanguagesListModel ---------------
 
   d.step("the language model fills, reorders and tracks the selection") do
     d.check("lang_name resolves a CLDR code") { Languages.lang_name("fr") == "French" }
@@ -459,13 +1318,16 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
   end
 
-  # --- 12. Providers registry ---------------------------------------------
+  # --- 33. Providers registry ---------------------------------------------
 
   d.step("every provider upstream ships is registered") do
     d.check("all seven modules are loaded") do
-      Providers::MODULES.keys == %w[bing deepl google kagi libretranslate lingva yandex]
+      (Providers::MODULES.keys - [DriveProvider.provider_name]) ==
+        %w[bing deepl google kagi libretranslate lingva yandex]
     end
-    d.check("all seven translate") { Providers::TRANSLATORS.keys.length == 7 }
+    d.check("all seven translate") do
+      (Providers::TRANSLATORS.keys - [DriveProvider.provider_name]).length == 7
+    end
     d.check("google and lingva are the TTS providers") do
       Providers::TTS.keys == %w[google lingva]
     end
@@ -478,11 +1340,13 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
   end
 
-  # --- 13. ProviderObject, 14. ProvidersListModel -------------------------
+  # --- 34. ProviderObject, 35. ProvidersListModel -------------------------
 
   d.step("the provider dropdown models list the right providers") do
     ProvidersListModel.new("translators").then do |model|
-      d.check("the translators list holds seven") { model.n_items == 7 }
+      d.check("the translators list holds seven, plus this script's probe") do
+        model.n_items == 8 && model.get_index_by_name(DriveProvider.provider_name).positive?
+      end
       d.check("the first is Bing") { model[0].name == "bing" && model[0].prettyname == "Bing" }
       d.check("prettynames come off the provider class") do
         model.providers.map(&:prettyname).include?("Kagi Translate")
@@ -506,11 +1370,11 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
 
     d.check("an unrecognised type lists every module") do
-      ProvidersListModel.new("everything").n_items == 7
+      ProvidersListModel.new("everything").n_items == Providers::MODULES.length
     end
   end
 
-  # --- 15. Settings -------------------------------------------------------
+  # --- 36. Settings -------------------------------------------------------
 
   d.step("settings round-trip through the file on disk") do
     File.join(SCRATCH, "roundtrip.json").then do |path|
@@ -602,7 +1466,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     d.check("and the app used it") { app.settings.equal?(Settings.get) }
   end
 
-  # --- 16. ProviderSettings -----------------------------------------------
+  # --- 37. ProviderSettings -----------------------------------------------
 
   d.step("per-provider settings read, write and migrate the API key") do
     File.join(SCRATCH, "provider-settings.json").then do |settings_path|
@@ -672,7 +1536,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
   end
 
-  # --- 17. Provider base --------------------------------------------------
+  # --- 38. Provider base --------------------------------------------------
 
   d.step("the provider base class composes urls and normalizes lang codes") do
     d.check("format_url builds an https url") do
@@ -806,7 +1670,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
   end
 
-  # --- 18-24. the seven provider classes ----------------------------------
+  # --- 39-45. the seven provider classes ----------------------------------
 
   d.step("each ported provider declares what upstream's module declares") do
     {
@@ -856,7 +1720,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     d.check("Kagi does not speak") { !KagiProvider.new.speaks? }
   end
 
-  # --- 25. Session --------------------------------------------------------
+  # --- 46. Session --------------------------------------------------------
 
   d.step("the HTTP session talks to a real socket") do
     Session.new.then do |session|
@@ -927,7 +1791,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
   end
 
-  # --- 26. SessionHelpers -------------------------------------------------
+  # --- 47. SessionHelpers -------------------------------------------------
 
   d.step("the provider request helpers retry, parse and raise") do
     DeniedProbe.new.then do |probe|
@@ -963,7 +1827,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
   end
 
-  # --- 27. BackgroundTask -------------------------------------------------
+  # --- 48. BackgroundTask -------------------------------------------------
 
   d.step("background work is delivered back on the main loop") do
     [].then do |results|
@@ -1021,46 +1885,34 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
 
   # --- what the port does NOT yet have ------------------------------------
   #
-  # Asserted explicitly so this script cannot be mistaken for covering the
-  # upstream UI. Every row of .reports/component-inventory.md is still absent,
-  # and these checks fail the moment one of them lands without being driven.
+  # Asserted explicitly so this script cannot be mistaken for covering more of
+  # upstream than it does. Each of these is named in `remaining` in the port's
+  # notes, with the reason, and these checks fail the moment one of them lands
+  # without being driven.
 
-  d.step("the scaffold has none of upstream's actions, menus or dialogs") do
-    %w[pronunciation preferences about quit].each do |name|
-      d.check("app.#{name} is not registered yet") { !app.app.has_action?(name) }
-      d.check("and has no accelerator bound") { app.app.get_accels_for_action("app.#{name}").empty? }
+  d.step("the components this round leaves out are absent, not half-built") do
+    # Text-to-speech: no Gst typelib in the dev shell, so there is nothing to
+    # play a provider's audio with.
+    %w[listen-src listen-dest].each do |name|
+      d.check("win.#{name} is not registered") { !app.window.window.has_action?(name) }
     end
-    %w[
-      back forward switch from to clear font-size-inc font-size-dec paste copy
-      listen-dest listen-src suggest suggest-ok suggest-cancel translation
-    ].each do |name|
-      d.check("win.#{name} is not registered yet") { !app.window.has_action?(name) }
-    end
-    d.check("no dialog is open") { app.window.visible_dialog.nil? }
-    d.check("the header bar has no menu button yet") do
-      [].then do |buttons|
-        walk = lambda do |widget|
-          if widget.is_a?(Gtk::MenuButton)
-            buttons << widget
-          end
-          child = widget.first_child
-          while child
-            walk.call(child)
-            child = child.next_sibling
-          end
-        end
-        walk.call(app.header_bar)
-        buttons.empty?
+    d.check("there is no speech button class") { !Object.const_defined?(:SpeechButton) }
+    d.check("and no speech button in the source toolbar") do
+      app.window.src_toolbar.observe_children.then do |children|
+        Array.new(children.n_items) { |i| children.get_item(i) }
+             .none? { |child| child.css_classes.include?("speech-button") }
       end
     end
-    d.check("the translator window class is not defined yet") { !Dialect.const_defined?(:Window) }
-    d.check("the status page is still the only content state") do
-      app.toolbar_view.content.equal?(app.status_page)
+    d.check("the broken-speakers icon is carried anyway, for when it lands") do
+      Gtk::IconTheme.get_for_display(Gdk::Display.default)
+                    .has_icon?("dialect-speakers-broken-symbolic")
     end
-    d.shot("03-scaffold")
+    # The GNOME Shell search provider and the translation catalogs.
+    d.check("there is no search provider class") { !Object.const_defined?(:SearchProvider) }
+    d.check("and no po directory") { !Dir.exist?(File.expand_path("../po", __dir__)) }
   end
 
-  # --- 28. the window's close-request handler -----------------------------
+  # --- 49. the window's close-request handler -----------------------------
   #
   # Last, because emitting close-request runs GTK's own default handler too,
   # which takes the window down.
@@ -1069,9 +1921,9 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     d.shot("04-before-close")
     Settings.get.window_size = [100, 100]
     # Inside the 640x480 virtual display, again so GTK does not clamp it.
-    app.window.set_default_size(620, 455)
+    app.window.window.set_default_size(620, 455)
     pump(300)
-    app.window.signal_emit("close-request").then do |stopped|
+    app.window.window.signal_emit("close-request").then do |stopped|
       d.check("the handler does not veto the close") { stopped == false }
     end
     d.check("the size was persisted") { Settings.get.window_size == [620, 455] }

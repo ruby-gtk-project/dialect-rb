@@ -13,5 +13,17 @@ require_relative "provider_settings"
 require_relative "providers"
 require_relative "settings"
 require_relative "style"
+require_relative "icons"
 
-require_relative "dialect/application"
+# Widgets, innermost first: each is built from the ones above it.
+require_relative "text_view"
+require_relative "theme_switcher"
+require_relative "lang_row"
+require_relative "lang_selector"
+require_relative "main_menu"
+require_relative "shortcuts_window"
+require_relative "provider_preferences"
+require_relative "preferences_dialog"
+require_relative "window"
+
+require_relative "main"

@@ -3,4 +3,4 @@
 
 require "dialect"
 
-Dialect::Application.new.build.run
+Dialect::Application.new(argv: ARGV).build.run

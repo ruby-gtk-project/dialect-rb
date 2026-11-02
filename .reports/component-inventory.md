@@ -5,20 +5,30 @@ on the `ruby` branch. Produced with the `component-identification` skill;
 widget/CSS/signal facets read off the `.blp`/`.ui` files, actions and
 runtime-built widgets read off the Python.
 
-**State of the port:** the non-widget half of the app is ported — settings,
+**State of the port:** the non-widget half was ported first — settings,
 languages, the build-time constants, the HTTP session, the async helper, the
 stylesheet loader and all seven providers behind their base class, registry,
-error types and per-provider settings (units 17–34, 3,900-odd lines in
-`lib/*.rb`). **No user-facing component exists yet:** units 1–16 are all
-absent, and `lib/dialect/application.rb` is still the scaffold window with a
-"not written yet" `Adw.StatusPage`. Units 35–37 are absent too.
+error types and per-provider settings (units 17–34). Round 1 of the UI then
+landed units 1–10, 12–16 and 36: the application and its About dialog, the app
+menu, the window with all four of its states and the whole translation view,
+both language selectors and their rows, the theme switcher, the text views,
+the preferences dialog and its provider subpage, the shortcuts window and the
+two icon assets. The scaffold status page is gone;
+`lib/dialect/application.rb` has been replaced by `lib/main.rb`.
+
+**Still absent:** unit 11 (the speech button) and the `win.listen-src` /
+`win.listen-dest` actions it drives, because there is no GStreamer typelib in
+the dev shell to play a provider's audio with; unit 35 (the GNOME Shell search
+provider); and unit 37 (the translation catalogs). Upstream's spell checking,
+part of unit 4, is absent for the same reason as the speech button — no
+Spelling typelib. Each is driven as absent by `test/drive_dialect.rb`, so none
+of them can be mistaken for done.
 
 House shape follows the pilot at `gnome-contacts-rb`: flat `lib/*.rb`, one
 upstream unit per file, `# frozen_string_literal: true` + `require 'adwaita'` +
 `require_relative` siblings, a comment naming the upstream file, memoized
 widget accessors configured in `.tap`. The application class lands in
-`lib/main.rb` (as the pilot does), and the scaffold's
-`lib/dialect/application.rb` stays as the gem's one-expression launcher.
+`lib/main.rb`, as the pilot does.
 
 ---
 
@@ -26,22 +36,22 @@ widget accessors configured in `.tap`. The application class lands in
 
 | # | Upstream file(s) | Target | Kind | Present |
 |---|---|---|---:|---|
-| 1 | `dialect/main.py` | `lib/main.rb` | application | no |
-| 2 | `dialect/main.py` (`_on_about`), `data/app.drey.Dialect.metainfo.xml.in.in` | `lib/main.rb` | dialog (About) | no |
-| 3 | `dialect/window.blp` (`menu app-menu`) | `lib/main_menu.rb` | menu model | no |
-| 4 | `dialect/window.blp`, `dialect/window.py` | `lib/window.rb` | window | no |
-| 5 | `dialect/window.blp` (`loading_page`) | `lib/window.rb` | loading state | no |
-| 6 | `dialect/window.blp` (`error_page`), `window.py` `show_translator_error_view` | `lib/window.rb` | error state | no |
-| 7 | `dialect/window.blp` (`key_page`), `window.py` `show_translator_api_key_view` | `lib/window.rb` | error state (API key) | no |
-| 8 | `dialect/window.blp` (`translator_box` + toolbars) | `lib/window.rb` | page (translation view) | no |
-| 9 | `dialect/widgets/lang_selector.blp`, `lang_selector.py` (`LangSelector`) | `lib/lang_selector.rb` | widget (popover selector) | no |
-| 10 | `dialect/widgets/lang_row.blp`, `lang_selector.py` (`LangRow`) | `lib/lang_row.rb` | row | no |
-| 11 | `dialect/widgets/speech_button.blp`, `speech_button.py` | `lib/speech_button.rb` | widget (button) | no |
-| 12 | `dialect/widgets/theme_switcher.blp`, `theme_switcher.py` | `lib/theme_switcher.rb` | widget (menu custom slot) | no |
-| 13 | `dialect/widgets/textview.py` | `lib/text_view.rb` | widget (text view) | no |
-| 14 | `dialect/preferences.ui`, `dialect/preferences.py` | `lib/preferences_dialog.rb` | preferences dialog | no |
-| 15 | `dialect/widgets/provider_preferences.blp`, `provider_preferences.py` | `lib/provider_preferences.rb` | preferences subpage | no |
-| 16 | `dialect/shortcuts.blp`, `dialect/shortcuts.py` | `lib/shortcuts_window.rb` | keyboard shortcuts | no |
+| 1 | `dialect/main.py` | `lib/main.rb` | application | **yes** |
+| 2 | `dialect/main.py` (`_on_about`), `data/app.drey.Dialect.metainfo.xml.in.in` | `lib/main.rb` | dialog (About) | **yes** |
+| 3 | `dialect/window.blp` (`menu app-menu`) | `lib/main_menu.rb` | menu model | **yes** |
+| 4 | `dialect/window.blp`, `dialect/window.py` | `lib/window.rb` | window | **yes** (no spell checking — no Spelling typelib) |
+| 5 | `dialect/window.blp` (`loading_page`) | `lib/window.rb` | loading state | **yes** |
+| 6 | `dialect/window.blp` (`error_page`), `window.py` `show_translator_error_view` | `lib/window.rb` | error state | **yes** |
+| 7 | `dialect/window.blp` (`key_page`), `window.py` `show_translator_api_key_view` | `lib/window.rb` | error state (API key) | **yes** |
+| 8 | `dialect/window.blp` (`translator_box` + toolbars) | `lib/window.rb` | page (translation view) | **yes** (no speech buttons — see unit 11) |
+| 9 | `dialect/widgets/lang_selector.blp`, `lang_selector.py` (`LangSelector`) | `lib/lang_selector.rb` | widget (popover selector) | **yes** |
+| 10 | `dialect/widgets/lang_row.blp`, `lang_selector.py` (`LangRow`) | `lib/lang_row.rb` | row | **yes** |
+| 11 | `dialect/widgets/speech_button.blp`, `speech_button.py` | `lib/speech_button.rb` | widget (button) | no (no Gst typelib to play the audio) |
+| 12 | `dialect/widgets/theme_switcher.blp`, `theme_switcher.py` | `lib/theme_switcher.rb` | widget (menu custom slot) | **yes** |
+| 13 | `dialect/widgets/textview.py` | `lib/text_view.rb` | widget (text view) | **yes** (on Gtk::TextView — no GtkSourceView typelib) |
+| 14 | `dialect/preferences.ui`, `dialect/preferences.py` | `lib/preferences_dialog.rb` | preferences dialog | **yes** |
+| 15 | `dialect/widgets/provider_preferences.blp`, `provider_preferences.py` | `lib/provider_preferences.rb` | preferences subpage | **yes** |
+| 16 | `dialect/shortcuts.blp`, `dialect/shortcuts.py` | `lib/shortcuts_window.rb` | keyboard shortcuts | **yes** (Adw.ShortcutsDialog — Gtk::ShortcutsWindow cannot be constructed) |
 | 17 | `dialect/settings.py`, `data/app.drey.Dialect.gschema.xml.in` | `lib/settings.rb` | settings/GSettings | **yes** |
 | 18 | `dialect/languages.py` | `lib/languages.rb` | list model | **yes** |
 | 19 | `dialect/define.in` (`LANGUAGES`, `LANG_ALIASES`, `TRANS_NUMBER`) | `lib/define.rb` | constants | **yes** |
@@ -61,7 +71,7 @@ widget accessors configured in `.tap`. The application class lands in
 | 33 | `dialect/utils.py` | `lib/utils.rb` | helpers | **yes** |
 | 34 | `dialect/style.css`, `dialect/style-dark.css` | `lib/style.rb` | stylesheet loader | **yes** |
 | 35 | `dialect/search_provider/search_provider.in` + `.ini`/`.service.in` | `lib/search_provider.rb` | GNOME Shell search provider | no |
-| 36 | `dialect/icons/settings-symbolic.svg`, `icons/speakers-broken-symbolic.svg`, `dialect/dialect.gresource.xml` | `data/icons/` | icon assets | no |
+| 36 | `dialect/icons/settings-symbolic.svg`, `icons/speakers-broken-symbolic.svg`, `dialect/dialect.gresource.xml` | `data/icons/` | icon assets | **yes** (`lib/icons.rb` adds them to the icon theme) |
 | 37 | `po/` (git submodule, `dialect` + `dialect-cldr-langs` domains) | `po/` | translations | no (submodule not checked out) |
 
 ---
