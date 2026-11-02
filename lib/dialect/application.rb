@@ -19,6 +19,14 @@ module Dialect
     def build
       app.tap do
         app.signal_connect("activate") do
+          # Upstream gets this from Adw.Application. The port cannot use
+          # Adwaita::Application — it is broken in the Ruby bindings — so
+          # libadwaita has to be initialized by hand, as the pilot port does.
+          # Without it adw_init() never runs, the Adwaita stylesheet is never
+          # installed and every Adwaita widget renders as an unstyled GTK box:
+          # the status page's icon comes out 16px and its title in body text.
+          Adwaita.init
+
           Style.load
 
           window.tap do |win|
