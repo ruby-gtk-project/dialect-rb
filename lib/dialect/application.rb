@@ -3,10 +3,14 @@
 require "gtk4"
 require "adwaita"
 
+require_relative "../settings"
+require_relative "../style"
+require_relative "../providers"
+
 module Dialect
-  # The port's application: one window, and a status page saying the port has
-  # not been written yet. Everything else grows from here — replace the status
-  # page with the real content, keep the shape.
+  # The port's application: one window, and a status page naming how far the
+  # port has got. Everything else grows from here — replace the status page
+  # with the real content, keep the shape.
   #
   # House style (see .claude/skills/ruby-gtk): every widget is a memoized
   # method, all configuration lives in its `tap`, assembly happens only in
@@ -15,8 +19,15 @@ module Dialect
     def build
       app.tap do
         app.signal_connect("activate") do
+          Style.load
+
           window.tap do |win|
             win.content = toolbar_view
+
+            win.signal_connect("close-request") do
+              settings.window_size = [win.default_width, win.default_height]
+              false
+            end
           end
 
           toolbar_view.tap do |view|
@@ -33,10 +44,14 @@ module Dialect
     # object comes from Gtk and only the window is Adwaita.
     def app = @app ||= Gtk::Application.new("org.rubygtkproject.Dialect", :default_flags)
 
+    def settings = @settings ||= Settings.get
+
+    # The window size comes back from settings, the way upstream's
+    # `window-size` key restores it.
     def window
       @window ||= Adwaita::ApplicationWindow.new(app).tap do |win|
         win.title = "dialect"
-        win.set_default_size(800, 600)
+        win.set_default_size(*settings.window_size)
       end
     end
 
@@ -46,7 +61,8 @@ module Dialect
     def status_page
       @status_page ||= Adwaita::StatusPage.new.tap do |page|
         page.title = "dialect"
-        page.description = "The Ruby port has not been written yet."
+        page.description = "#{Providers::TRANSLATORS.length} translation providers are ported. " \
+                           "The translation window is not."
         page.icon_name = "applications-engineering-symbolic"
       end
     end
