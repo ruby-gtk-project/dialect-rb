@@ -5,10 +5,13 @@ on the `ruby` branch. Produced with the `component-identification` skill;
 widget/CSS/signal facets read off the `.blp`/`.ui` files, actions and
 runtime-built widgets read off the Python.
 
-**State of the port:** `lib/` holds only the scaffold — `lib/dialect.rb`
-(a single `require_relative`) and `lib/dialect/application.rb` (a window with a
-"not written yet" `Adw.StatusPage`). **No user-facing component exists yet.**
-Every row below is `absent`.
+**State of the port:** the non-widget half of the app is ported — settings,
+languages, the build-time constants, the HTTP session, the async helper, the
+stylesheet loader and all seven providers behind their base class, registry,
+error types and per-provider settings (units 17–34, 3,900-odd lines in
+`lib/*.rb`). **No user-facing component exists yet:** units 1–16 are all
+absent, and `lib/dialect/application.rb` is still the scaffold window with a
+"not written yet" `Adw.StatusPage`. Units 35–37 are absent too.
 
 House shape follows the pilot at `gnome-contacts-rb`: flat `lib/*.rb`, one
 upstream unit per file, `# frozen_string_literal: true` + `require 'adwaita'` +
@@ -39,24 +42,24 @@ widget accessors configured in `.tap`. The application class lands in
 | 14 | `dialect/preferences.ui`, `dialect/preferences.py` | `lib/preferences_dialog.rb` | preferences dialog | no |
 | 15 | `dialect/widgets/provider_preferences.blp`, `provider_preferences.py` | `lib/provider_preferences.rb` | preferences subpage | no |
 | 16 | `dialect/shortcuts.blp`, `dialect/shortcuts.py` | `lib/shortcuts_window.rb` | keyboard shortcuts | no |
-| 17 | `dialect/settings.py`, `data/app.drey.Dialect.gschema.xml.in` | `lib/settings.rb` | settings/GSettings | no |
-| 18 | `dialect/languages.py` | `lib/languages.rb` | list model | no |
-| 19 | `dialect/define.in` (`LANGUAGES`, `LANG_ALIASES`, `TRANS_NUMBER`) | `lib/define.rb` | constants | no |
-| 20 | `dialect/providers/base.py`, `providers/local.py` | `lib/provider.rb` | provider base | no |
-| 21 | `dialect/providers/__init__.py` (`ProviderObject`, `ProvidersListModel`, registry) | `lib/providers.rb` | registry + list model | no |
-| 22 | `dialect/providers/errors.py` | `lib/provider_errors.rb` | error types | no |
-| 23 | `dialect/providers/settings.py` | `lib/provider_settings.rb` | per-provider settings + secrets | no |
-| 24 | `dialect/providers/modules/google.py` | `lib/google_provider.rb` | provider (translate + TTS) | no |
-| 25 | `dialect/providers/modules/bing.py` | `lib/bing_provider.rb` | provider | no |
-| 26 | `dialect/providers/modules/deepl.py` | `lib/deepl_provider.rb` | provider | no |
-| 27 | `dialect/providers/modules/kagi.py` | `lib/kagi_provider.rb` | provider | no |
-| 28 | `dialect/providers/modules/libretrans.py` | `lib/libretranslate_provider.rb` | provider | no |
-| 29 | `dialect/providers/modules/lingva.py` | `lib/lingva_provider.rb` | provider (translate + TTS) | no |
-| 30 | `dialect/providers/modules/yandex.py` | `lib/yandex_provider.rb` | provider | no |
-| 31 | `dialect/providers/soup.py`, `dialect/session.py` | `lib/session.rb` | HTTP session | no |
-| 32 | `dialect/asyncio.py` | `lib/background_task.rb` | async helper | no |
-| 33 | `dialect/utils.py` | `lib/utils.rb` | helpers | no |
-| 34 | `dialect/style.css`, `dialect/style-dark.css` | `lib/style.rb` | stylesheet loader | no |
+| 17 | `dialect/settings.py`, `data/app.drey.Dialect.gschema.xml.in` | `lib/settings.rb` | settings/GSettings | **yes** |
+| 18 | `dialect/languages.py` | `lib/languages.rb` | list model | **yes** |
+| 19 | `dialect/define.in` (`LANGUAGES`, `LANG_ALIASES`, `TRANS_NUMBER`) | `lib/define.rb` | constants | **yes** |
+| 20 | `dialect/providers/base.py`, `providers/local.py` | `lib/provider.rb` | provider base | **yes** |
+| 21 | `dialect/providers/__init__.py` (`ProviderObject`, `ProvidersListModel`, registry) | `lib/providers.rb` | registry + list model | **yes** |
+| 22 | `dialect/providers/errors.py` | `lib/provider_errors.rb` | error types | **yes** |
+| 23 | `dialect/providers/settings.py` | `lib/provider_settings.rb` | per-provider settings + secrets | **yes** |
+| 24 | `dialect/providers/modules/google.py` | `lib/google_provider.rb` | provider (translate + TTS) | **yes** |
+| 25 | `dialect/providers/modules/bing.py` | `lib/bing_provider.rb` | provider | **yes** |
+| 26 | `dialect/providers/modules/deepl.py` | `lib/deepl_provider.rb` | provider | **yes** |
+| 27 | `dialect/providers/modules/kagi.py` | `lib/kagi_provider.rb` | provider | **yes** |
+| 28 | `dialect/providers/modules/libretrans.py` | `lib/libretranslate_provider.rb` | provider | **yes** |
+| 29 | `dialect/providers/modules/lingva.py` | `lib/lingva_provider.rb` | provider (translate + TTS) | **yes** |
+| 30 | `dialect/providers/modules/yandex.py` | `lib/yandex_provider.rb` | provider | **yes** |
+| 31 | `dialect/providers/soup.py`, `dialect/session.py` | `lib/session.rb` | HTTP session | **yes** |
+| 32 | `dialect/asyncio.py` | `lib/background_task.rb` | async helper | **yes** |
+| 33 | `dialect/utils.py` | `lib/utils.rb` | helpers | **yes** |
+| 34 | `dialect/style.css`, `dialect/style-dark.css` | `lib/style.rb` | stylesheet loader | **yes** |
 | 35 | `dialect/search_provider/search_provider.in` + `.ini`/`.service.in` | `lib/search_provider.rb` | GNOME Shell search provider | no |
 | 36 | `dialect/icons/settings-symbolic.svg`, `icons/speakers-broken-symbolic.svg`, `dialect/dialect.gresource.xml` | `data/icons/` | icon assets | no |
 | 37 | `po/` (git submodule, `dialect` + `dialect-cldr-langs` domains) | `po/` | translations | no (submodule not checked out) |
@@ -501,7 +504,8 @@ the language code as msgctxt).
 
 ## Totals
 
-* 37 units; 0 present in `lib/`.
+* 37 units; 18 present in `lib/` (17–34, the non-widget layer), 19 absent
+  (1–16 every user-facing component, plus 35–37).
 * 4 top-level states in one `Gtk.Stack` (loading / error / api-key / translate),
   2 layouts behind one `Adw.Breakpoint`.
 * 20 window actions + 4 app actions; 16 accelerator bindings.
@@ -527,14 +531,16 @@ the language code as msgctxt).
 5. **No libsecret binding.** API keys are stored in the secret service
    upstream; the port needs another store, which changes what
    `ProviderPreferences` can promise.
-6. **No libsoup binding** (`require "soup3"` fails), so every provider's HTTP
-   has to go through Ruby's own stack, and `session.py` becomes a rewrite
-   rather than a port.
+6. ~~**No libsoup binding**~~ — resolved: `lib/session.rb` rewrites
+   `soup.py`/`session.py` on Ruby's own HTTP stack, keeping the
+   `Session.get`/`post` shape the providers call.
 7. **Provider scope is undecided.** Seven network providers, several needing
    API keys, cannot all be exercised; which ones ship decides which
    preference rows and error states are even reachable.
 8. **No `PLAN.md` yet**, so there is no unit ordering for the port to follow;
-   this inventory is the input to writing one.
+   this inventory is the input to writing one. With 17–34 landed, the next
+   unit has to be a widget one — `lib/window.rb` (unit 4) and its four stack
+   states are what every other UI unit hangs off.
 
 Dev shell confirms the widget side is available: GTK 4.22.4 with
 `Adwaita::MultiLayoutView`, `Layout`, `LayoutSlot`, `Breakpoint`, `Spinner`,
