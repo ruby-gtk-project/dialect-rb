@@ -189,6 +189,16 @@
             pkgs.pkg-config
             pkgs.glib.dev
             pkgs.gettext
+            # rxgettext, the extractor `rake pot` drives. GNU xgettext claims
+            # to support Ruby but only shells out to this, so without it
+            # `xgettext --language=Ruby` fails.
+            pkgs.rubyPackages_3_4.gettext
+            # The spec runner. The suite is plain RSpec, so this is enough.
+            pkgs.rubyPackages_3_4.rspec
+            # This machine may have no display server at all, so the shell
+            # carries one it can start itself: `xvfb-run ruby exe/<app>` both
+            # launches the app and is how test/drive_*.rb is run.
+            pkgs.xvfb-run
             pkgs.gsettings-desktop-schemas
             pkgs.adwaita-icon-theme
           ] ++ gtkStack;
@@ -198,9 +208,13 @@
           shellHook = ''
             export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}:${pkgs.adwaita-icon-theme}/share:$XDG_DATA_DIRS"
             export GI_TYPELIB_PATH="${typelibPath}''${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"
+            export RUBYLIB="$PWD/lib''${RUBYLIB:+:$RUBYLIB}"
             [ -d data/schemas ] && export GSETTINGS_SCHEMA_DIR="$PWD/data/schemas"
             unset BUNDLE_GEMFILE BUNDLE_FROZEN
             echo "dialect devshell — ruby $(ruby -e 'print RUBY_VERSION')"
+            echo "run the app:   xvfb-run ruby exe/dialect"
+            echo "drive the app: xvfb-run ruby test/drive_*.rb"
+            echo "run the specs: ruby -e 'require \"rspec/core\"; exit RSpec::Core::Runner.run([\"--format\", \"progress\", \"--require\", \"spec_helper\", \"spec\"])'"
           '';
         };
       });
