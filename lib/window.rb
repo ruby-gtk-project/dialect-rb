@@ -2,6 +2,7 @@
 
 require 'gtk4'
 require 'adwaita'
+require 'libspelling'
 
 require_relative 'background_task'
 require_relative 'define'
@@ -30,7 +31,7 @@ require_relative 'utils'
 # stands; the Ruby bindings have MultiLayoutView, Layout and LayoutSlot, and
 # they behave as the C API does.
 #
-# Four deliberate departures, each forced by what this machine's bindings
+# Three deliberate departures, each forced by what this machine's bindings
 # ship, and each one named in the port's notes rather than papered over:
 #
 # * Text-to-speech is left out. Upstream plays the provider's audio through a
@@ -38,9 +39,9 @@ require_relative 'utils'
 #   is nothing to play it with. The speech buttons, the `listen-src` and
 #   `listen-dest` actions and the Text-to-Speech shortcuts group go with it:
 #   a button wired to an action that cannot work is worse than no button.
-# * Spell checking is left out, for the same reason — no Spelling typelib —
-#   so upstream's setup_spell_checking and _pick_spell_checking_language have
-#   nothing to configure.
+#   (Spell checking, upstream's other libspelling-reader, is wired for real —
+#   see #setup_spell_checking — because the libspelling and gtksourceview5
+#   gems exist and the src text view is a GtkSource::View; see text_view.rb.)
 # * Upstream declares `translator-loading` as a GObject property that the
 #   application and both preferences pages watch with notify::. A plain class
 #   has no bindable properties, so observers register blocks through
@@ -147,6 +148,7 @@ class Window
 
       setup_selectors
       setup_translation
+      setup_spell_checking
 
       # Upstream's window listens for the user switching the active provider
       # in the preferences dialog.
@@ -1026,6 +1028,57 @@ class Window
       end
     end
 
+    # Upstream's setup_spell_checking: attaches a Spelling::TextBufferAdapter
+    # to the source view's buffer, so misspellings are underlined and its
+    # right-click menu offers corrections, and collects the provider's
+    # supported languages for #pick_spell_checking_language.
+    def setup_spell_checking
+      @spell_checker = Spelling::Checker.default
+      @spell_checker_adapter = Spelling::TextBufferAdapter.new(src_text.buffer, @spell_checker)
+      @spell_checker_adapter.enabled = true
+
+      src_text.set_extra_menu(@spell_checker_adapter.menu_model)
+      src_text.insert_action_group('spelling', @spell_checker_adapter)
+
+      @spell_checker_supported_languages = {}
+      @spell_checker.provider.list_languages.each do |language|
+        language.code.split(/[_-]/).first.then do |base_code|
+          (@spell_checker_supported_languages[base_code] ||= []) << language.code
+        end
+      end
+    end
+
+    # Upstream's _pick_spell_checking_language: picks the closest match the
+    # spell checking provider has for the translation source language,
+    # falling back to the user's own default dictionary.
+    def pick_spell_checking_language(lang_code)
+      lang_base_code = lang_code.split('-').first
+      default_user_lang_code = @spell_checker.provider.default_code
+
+      candidates = @spell_checker_supported_languages[lang_base_code]
+
+      @spell_checker.language = pick_spell_checker_code(
+        candidates,
+        lang_code,
+        default_user_lang_code,
+        lang_base_code,
+      )
+    end
+
+    def pick_spell_checker_code(candidates, lang_code, default_user_lang_code, lang_base_code)
+      if candidates.nil?
+        default_user_lang_code
+      elsif candidates.include?(lang_code)
+        lang_code
+      elsif candidates.include?(lang_code.tr('-', '_'))
+        lang_code.tr('-', '_')
+      elsif default_user_lang_code.to_s.start_with?(lang_base_code)
+        default_user_lang_code
+      else
+        candidates.first
+      end
+    end
+
     # Upstream's load_translator, run off the main loop by BackgroundTask
     # rather than awaited.
     def load_translator
@@ -1336,6 +1389,8 @@ class Window
           end
 
           @src_recent_lang_model.set_langs(@src_langs, auto: trans.supports_detection?)
+
+          pick_spell_checking_language(code)
         end
 
         check_switch_enabled

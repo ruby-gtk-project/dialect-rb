@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'gtk4'
+require 'gtksourceview5'
 
 require_relative 'settings'
 
@@ -10,18 +11,9 @@ require_relative 'settings'
 #
 # Ported from upstream's dialect/widgets/textview.py.
 #
-# Two deliberate departures from upstream, both forced by what the Ruby
-# bindings ship:
+# One deliberate departure from upstream, forced by what the Ruby bindings
+# ship:
 #
-# * Upstream subclasses GtkSource.View so it can hang a GtkSourceView spell
-#   checker off the buffer. There is no GtkSourceView typelib in the dev
-#   shell — and no Spelling typelib either, so the spell checker upstream's
-#   window installs has nothing to attach to — so this subclasses
-#   Gtk::TextView. Everything upstream's TextView itself does (wrapping, the
-#   activate signal, the font-size CSS provider, the two controllers) is a
-#   plain GtkTextView behaviour and is carried over unchanged. The
-#   `dialect-sourceview` CSS class is still applied, so style.css's caret
-#   colour rule still matches.
 # * Upstream declares `activate` as a GObject signal and `font-size` as a
 #   GObject property, then binds the two views' font sizes together with
 #   GObject.BindingFlags.BIDIRECTIONAL. A GLib::Object subclass in the Ruby
@@ -31,7 +23,12 @@ require_relative 'settings'
 #   activation and font-size changes are delivered to blocks handed in at
 #   construction, and the window keeps the two views in step by passing each
 #   the other's setter.
-class TextView < Gtk::TextView
+#
+# Upstream subclasses GtkSource.View rather than Gtk.TextView so it can hang a
+# GtkSourceView spell checker off the buffer, through the gtksourceview5 and
+# libspelling gems — see window.rb's #setup_spell_checking, which attaches a
+# Spelling::TextBufferAdapter to #buffer.
+class TextView < GtkSource::View
   # Upstream's font_size_inc/font_size_dec step, and the floor the decrement
   # refuses to go below.
   FONT_STEP = 5

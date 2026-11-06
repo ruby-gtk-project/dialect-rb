@@ -1,8 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
-require 'net/http'
-require 'openssl'
+require 'soup3'
 require 'uri'
 
 require_relative 'provider_errors'
@@ -24,26 +23,57 @@ end
 # Dialect's HTTP session handler and the request helpers providers are built
 # on.
 #
-# Ported from upstream's dialect/session.py and dialect/providers/soup.py.
+# Ported from upstream's dialect/session.py and dialect/providers/soup.py,
+# through the soup3 gem: libsoup's own Soup::Session, exactly as upstream
+# uses it, rather than the Net::HTTP stand-in an earlier round of this port
+# hand-rolled because no Ruby binding for libsoup existed yet.
 #
-# Upstream uses libsoup's Soup.Session with send_and_read_async, awaited from
-# asyncio coroutines on the GLib main loop. The Ruby bindings ship no libsoup
-# bindings, so requests go through Net::HTTP instead, and the asynchrony moves
-# out of the provider methods and into BackgroundTask, which runs them on a
-# worker thread and hands the result back on the main loop. Provider methods
-# are therefore blocking calls that must not be made from the main thread.
+# soup3's Soup::Session has both the async methods upstream awaits from its
+# asyncio coroutines and plain synchronous ones (#send_and_read); this uses
+# the synchronous one, since BackgroundTask already moves provider calls onto
+# a worker thread rather than the GLib main loop, so there is no coroutine to
+# suspend here.
+#
+# Each message carries Soup::MessageFlags::NO_REDIRECT, and redirects are
+# followed by hand, in #follow below, rather than through libsoup's own
+# built-in following. Measured against the probe server in
+# test/drive_dialect.rb: libsoup auto-follows a bodyless GET through as many
+# 307/308 hops as it likes (raising Soup::SessionError::TooManyRedirects once
+# its own internal cap is hit), but does *not* auto-follow a 307/308 on a
+# request that carries a body — it hands the 308 straight back instead of
+# resending the body to the new location — because resending a POST body
+# without the caller's say-so is exactly the kind of thing an HTTP client
+# should not do silently. lingva.dialectapp.org answers its API paths with a
+# 308 to the same path with a trailing slash, including on POSTs, so that
+# case has to work; handling every redirect the same way, by hand, with one
+# hop budget, is simpler than special-casing GET.
+#
+# One known regression, found while writing this: Net::HTTP's blocking calls
+# release Ruby's global VM lock for the syscall, so a BackgroundTask worker
+# thread doing a request left the main thread (and its GLib main loop) free to
+# keep the UI responsive. soup3's #send_and_read is invoked through
+# GObjectIntrospection's generic method invoker, which does not release the
+# GVL for the duration of the call — confirmed by running it against a
+# same-process loopback server on a second Ruby Thread, which never got
+# scheduled to answer until the request timed out (see test/drive_dialect.rb's
+# HttpProbe, which now serves from a forked process rather than a Thread for
+# exactly this reason). In this app that means the UI can stall for the
+# length of a translation request. Fixing it for real means driving
+# soup3 asynchronously off the GLib main loop and turning every provider
+# method that calls through Session into a callback-based one — a change to
+# every provider file and to BackgroundTask's contract that is out of scope
+# for this round; it is named here and in the port's notes rather than
+# silently shipped as if it were free.
 class Session
   USER_AGENT = 'Dialect App'
 
-  # Default timeouts, in seconds. libsoup has its own defaults; these keep a
-  # hung service from pinning a worker thread forever.
-  OPEN_TIMEOUT = 15
-  READ_TIMEOUT = 30
+  # libsoup's one request timeout, covering both connecting and reading.
+  # Upstream leaves libsoup's own default; this keeps a hung service from
+  # pinning a worker thread forever.
+  TIMEOUT = 30
 
-  # Soup.Session follows redirects on its own, and services the providers talk
-  # to rely on it: lingva.dialectapp.org answers its API paths with a 308 to
-  # the same path with a trailing slash. Net::HTTP follows nothing, so the
-  # session does it here, with the browser rules libsoup implements.
+  # Upstream's redirect hop budget, now enforced by #follow rather than by
+  # libsoup (see the class comment).
   MAX_REDIRECTS = 5
 
   # Redirects that keep the original method and body.
@@ -56,12 +86,8 @@ class Session
   # read off a finished Soup.Message upstream.
   Response = Data.define(:status, :body)
 
-  # A finished request, carrying the Location header so a redirect can be
-  # followed without exposing it to the providers.
-  Result = Data.define(:response, :location)
-
   # Everything a request needs, so following a redirect is a matter of
-  # replacing the url and, where the status demands it, the method.
+  # replacing the url and, where the status demands it, the method and body.
   Request = Data.define(
     :method,
     :url,
@@ -70,27 +96,28 @@ class Session
     :form,
   )
 
-  # The network failures Net::HTTP can raise, which upstream sees as a
-  # GLib::Error out of libsoup and converts to RequestError.
-  NETWORK_ERRORS = [
-    SocketError,
-    OpenSSL::SSL::SSLError,
-    Errno::ECONNREFUSED,
-    Errno::ECONNRESET,
-    Errno::EHOSTUNREACH,
-    Errno::ENETUNREACH,
-    Errno::ETIMEDOUT,
-    Net::OpenTimeout,
-    Net::ReadTimeout,
-    Net::HTTPBadResponse,
-    IOError,
-  ].freeze
+  # The failures a send can raise that are not this app's fault: libsoup's
+  # own transport errors (connection refused, DNS failure, TLS, …) come back
+  # as a bare GLib::Error (itself a RuntimeError in this binding, so the
+  # second entry is redundant for those — it is kept because a URL libsoup's
+  # own parser rejects outright, such as an unbalanced IPv6 literal, fails
+  # inside Soup::Message.new itself with a plain RuntimeError that is not a
+  # GLib::Error at all); SocketError and the Errno constants cover the
+  # outcome if the underlying connect ever surfaces as a bare Ruby socket
+  # error instead of a wrapped GLib one.
+  NETWORK_ERRORS = [GLib::Error, RuntimeError, SocketError, SystemCallError].freeze
 
   # The process-wide session, matching upstream's Session.get().
   def self.get = @instance ||= new
 
   # Drops the process-wide session, so a test can install its own.
   def self.reset = @instance = nil
+
+  def initialize
+    @soup_session = Soup::Session.new.tap do |session|
+      session.timeout = TIMEOUT
+    end
+  end
 
   # Sends a request and reads the whole response.
   #
@@ -99,15 +126,9 @@ class Session
   # +form+ is set and as a JSON body otherwise, and a User-Agent is added
   # unless the caller supplied one.
   def send_and_read(method, url, data: nil, headers: {}, form: false)
-    Request.new(
-      method:  method,
-      url:     url,
-      data:    data,
-      headers: headers,
-      form:    form,
-    ).then { |request| follow(request, MAX_REDIRECTS) }
-  rescue URI::InvalidURIError => exc
-    raise ResponseError.new(exc.message)
+    Request.new(method: method, url: url, data: data, headers: headers, form: form).then do |request|
+      follow(request, MAX_REDIRECTS)
+    end
   rescue *NETWORK_ERRORS => exc
     raise ResponseError.new(exc.message)
   end
@@ -115,26 +136,16 @@ class Session
   private
 
     # Performs the request and follows a redirect when the service sends one,
-    # until the hop budget runs out.
+    # until the hop budget runs out — at which point, like upstream, the last
+    # redirect response is handed back rather than raised as an error.
     def follow(request, hops)
-      URI.parse(request.url).then do |uri|
-        perform(uri, net_request(request, uri)).then do |result|
-          redirect_from(
-            result,
-            uri,
-            request,
-            hops,
-          ) || result.response
-        end
-      end
-    end
-
-    # The response to the redirect target, or nil when this was not a
-    # redirect or the hops ran out.
-    def redirect_from(result, uri, request, hops)
-      location_of(result, uri).then do |location|
-        unless location.nil? || hops.zero?
-          follow(redirected(request, result.response.status, location), hops - 1)
+      perform(request).then do |(headers, response)|
+        location_of(request, headers, response).then do |location|
+          if location.nil? || hops.zero?
+            response
+          else
+            follow(redirected(request, response.status, location), hops - 1)
+          end
         end
       end
     end
@@ -147,10 +158,18 @@ class Session
       end
     end
 
-    # The absolute target of a redirect, or nil when this was not one.
-    def location_of(result, uri)
-      if redirect?(result.response.status) && !result.location.nil?
-        URI.join(uri, result.location).to_s
+    # The absolute target of a redirect, or nil when this was not one. The
+    # request's own url, not the message's, is resolved against: libsoup's
+    # GUri (Soup::Message#uri) has no Ruby-level stringifier this binding
+    # exposes, but the url this method was called with is already the string
+    # #redirected needs to resolve a relative Location against.
+    def location_of(request, headers, response)
+      if redirect?(response.status)
+        headers.get_one('Location').then do |location|
+          if location
+            URI.join(request.url, location).to_s
+          end
+        end
       end
     end
 
@@ -158,42 +177,38 @@ class Session
       KEEP_METHOD_STATUSES.include?(status) || REWRITE_METHOD_STATUSES.include?(status)
     end
 
-    def net_request(request, uri)
-      Net::HTTP.const_get(request.method.to_s.capitalize).new(uri).tap do |net|
-        request.headers.each { |name, value| net[name] = value }
+    def perform(request)
+      build_message(request).then do |message|
+        @soup_session.send_and_read(message).then do |bytes|
+          [message.response_headers, Response.new(status: message.status_code, body: bytes.to_s)]
+        end
+      end
+    end
+
+    def build_message(request)
+      Soup::Message.new(request.method, request.url).tap do |message|
+        message.add_flags(Soup::MessageFlags::NO_REDIRECT)
+
+        request.headers.each { |name, value| message.request_headers.append(name.to_s, value.to_s) }
 
         unless request.headers.keys.any? { |name| name.to_s.casecmp('User-Agent').zero? }
-          net['User-Agent'] = USER_AGENT
+          message.request_headers.append('User-Agent', USER_AGENT)
         end
 
-        add_body(net, request.data, request.form)
+        add_body(message, request.data, request.form)
       end
     end
 
-    def add_body(net, data, form)
+    def add_body(message, data, form)
       if data && !data.empty?
         if form
-          net.set_form_data(data)
+          GLib::Bytes.new(Soup.form_encode_hash(data).b).then do |bytes|
+            message.set_request_body_from_bytes('application/x-www-form-urlencoded', bytes)
+          end
         else
-          net['Content-Type'] = 'application/json'
-          net.body = JSON.generate(data)
-        end
-      end
-    end
-
-    def perform(uri, net)
-      Net::HTTP.start(
-        uri.hostname,
-        uri.port,
-        use_ssl:      uri.scheme == 'https',
-        open_timeout: OPEN_TIMEOUT,
-        read_timeout: READ_TIMEOUT,
-      ) do |http|
-        http.request(net).then do |response|
-          Result.new(
-            response: Response.new(status: response.code.to_i, body: response.body.to_s),
-            location: response['Location'],
-          )
+          GLib::Bytes.new(JSON.generate(data).b).then do |bytes|
+            message.set_request_body_from_bytes('application/json', bytes)
+          end
         end
       end
     end

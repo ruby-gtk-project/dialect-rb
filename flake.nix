@@ -25,6 +25,11 @@
           libadwaita
           harfbuzz
           librsvg
+          # soup3's typelib (Soup-3.0), and libspelling's (Spelling-1) plus the
+          # GtkSource-5 typelib libspelling's TextBufferAdapter attaches to.
+          libsoup_3
+          libspelling
+          gtksourceview5
         ]
         # The Ruby `pkg-config` gem resolves `Requires.private` transitively and
         # hard-fails if any .pc in the chain is missing, so gtk4's whole private
@@ -87,6 +92,7 @@
           graphene1 = rubyGnomeGem;
           adwaita = rubyGnomeGem;
           rsvg2 = rubyGnomeGem;
+          gtksourceview5 = rubyGnomeGem;
         };
 
         # `makeSearchPath` would take each package's *first* output, and glib's

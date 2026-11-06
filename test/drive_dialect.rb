@@ -103,25 +103,36 @@ Settings.get.window_size = WINDOW_SIZE
 # real sockets without touching the network. Each connection serves one
 # request and closes, which is what Session's Net::HTTP calls expect.
 class HttpProbe
-  attr_reader :port, :log
+  attr_reader :port
 
+  # Serves from a forked child process rather than a Ruby Thread in this
+  # script's own process. Session's requests go through soup3's real
+  # Soup::Session#send_and_read, a blocking call that the generic
+  # GObjectIntrospection invoker does not release Ruby's global VM lock for
+  # (unlike Net::HTTP's, which this port's session.rb used to call) — so a
+  # same-process probe Thread would never get scheduled while a request to it
+  # is in flight, and would time the request out rather than answering it.
+  # Hit counts cross the fork through a plain log file instead of shared
+  # memory: each hit appends one line, under PIPE_BUF, so concurrent appends
+  # from the child stay atomic.
   def initialize
     @server = TCPServer.new("127.0.0.1", 0)
     @port = @server.addr[1]
-    @log = []
-    @hits = Hash.new(0)
-    @mutex = Mutex.new
-    @thread = Thread.new { accept_loop }
+    @log_path = File.join(Dir.mktmpdir("dialect-probe"), "hits.log")
+    FileUtils.touch(@log_path)
+    @pid = fork { accept_loop }
+    @server.close
   end
 
   def url(path) = "http://127.0.0.1:#{port}#{path}"
 
-  def hits(path) = @mutex.synchronize { @hits[path] }
-  def requests = @mutex.synchronize { @log.dup }
+  def hits(path) = File.readlines(@log_path).count { |line| line.strip == path }
 
   def stop
-    @thread.kill
-    @server.close
+    Process.kill("TERM", @pid)
+    Process.wait(@pid)
+  rescue Errno::ESRCH, Errno::ECHILD
+    nil
   end
 
   private
@@ -142,10 +153,7 @@ class HttpProbe
 
     def serve(socket)
       read_request(socket).then do |(method, path, headers, body)|
-        @mutex.synchronize do
-          @hits[path] += 1
-          @log << {method: method, path: path, headers: headers, body: body}
-        end
+        File.open(@log_path, "a") { |f| f.write("#{path}\n") }
 
         socket.write(
           response_for(
