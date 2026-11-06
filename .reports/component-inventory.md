@@ -5,24 +5,27 @@ on the `ruby` branch. Produced with the `component-identification` skill;
 widget/CSS/signal facets read off the `.blp`/`.ui` files, actions and
 runtime-built widgets read off the Python.
 
-**State of the port:** the non-widget half was ported first — settings,
-languages, the build-time constants, the HTTP session, the async helper, the
-stylesheet loader and all seven providers behind their base class, registry,
-error types and per-provider settings (units 17–34). Round 1 of the UI then
-landed units 1–10, 12–16 and 36: the application and its About dialog, the app
-menu, the window with all four of its states and the whole translation view,
-both language selectors and their rows, the theme switcher, the text views,
-the preferences dialog and its provider subpage, the shortcuts window and the
-two icon assets. The scaffold status page is gone;
-`lib/dialect/application.rb` has been replaced by `lib/main.rb`.
+**State of the port (updated 2026-11-06):** the non-widget half was ported
+first — settings, languages, the build-time constants, the HTTP session, the
+async helper, the stylesheet loader and all seven providers behind their base
+class, registry, error types and per-provider settings (units 17–34). The UI
+has since landed too: units 1–10, 12–16 and 36 are all present — the
+application and its About dialog, the app menu, the window with all four of
+its states and the whole translation view, both language selectors and their
+rows, the theme switcher, the text views, the preferences dialog and its
+provider subpage, the shortcuts window and the two icon assets. The scaffold
+status page is gone; `lib/dialect/application.rb` has been replaced by
+`lib/main.rb`.
 
 **Still absent:** unit 11 (the speech button) and the `win.listen-src` /
 `win.listen-dest` actions it drives, because there is no GStreamer typelib in
-the dev shell to play a provider's audio with; unit 35 (the GNOME Shell search
-provider); and unit 37 (the translation catalogs). Upstream's spell checking,
-part of unit 4, is absent for the same reason as the speech button — no
-Spelling typelib. Each is driven as absent by `test/drive_dialect.rb`, so none
-of them can be mistaken for done.
+the dev shell to play a provider's audio with — this is a deliberate,
+documented departure (see the header comment of `lib/window.rb`), not an
+oversight; unit 35 (the GNOME Shell search provider); and unit 37 (the
+translation catalogs). Upstream's spell checking, part of unit 4, is absent
+for the same reason as the speech button — no Spelling typelib. Each is
+driven as absent by `test/drive_dialect.rb`, so none of them can be mistaken
+for done.
 
 House shape follows the pilot at `gnome-contacts-rb`: flat `lib/*.rb`, one
 upstream unit per file, `# frozen_string_literal: true` + `require 'adwaita'` +
@@ -514,8 +517,8 @@ the language code as msgctxt).
 
 ## Totals
 
-* 37 units; 18 present in `lib/` (17–34, the non-widget layer), 19 absent
-  (1–16 every user-facing component, plus 35–37).
+* 37 units; 34 present in `lib/` (units 1–10, 12–34, 36), 3 absent
+  (11 — speech button, by deliberate design; 35 — search provider; 37 — po/).
 * 4 top-level states in one `Gtk.Stack` (loading / error / api-key / translate),
   2 layouts behind one `Adw.Breakpoint`.
 * 20 window actions + 4 app actions; 16 accelerator bindings.
@@ -547,10 +550,10 @@ the language code as msgctxt).
 7. **Provider scope is undecided.** Seven network providers, several needing
    API keys, cannot all be exercised; which ones ship decides which
    preference rows and error states are even reachable.
-8. **No `PLAN.md` yet**, so there is no unit ordering for the port to follow;
-   this inventory is the input to writing one. With 17–34 landed, the next
-   unit has to be a widget one — `lib/window.rb` (unit 4) and its four stack
-   states are what every other UI unit hangs off.
+8. **No `PLAN.md` yet.** With units 1–10, 12–34 and 36 now landed, the
+   remaining work is unit 35 (search provider — needs a D-Bus binding
+   decision), unit 37 (fetch the `po/` submodule), and deciding whether unit
+   11 (speech button) stays dropped for lack of GStreamer or gets revisited.
 
 Dev shell confirms the widget side is available: GTK 4.22.4 with
 `Adwaita::MultiLayoutView`, `Layout`, `LayoutSlot`, `Breakpoint`, `Spinner`,
