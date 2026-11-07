@@ -13,6 +13,7 @@ require_relative 'provider_errors'
 require_relative 'providers'
 require_relative 'settings'
 require_relative 'shortcuts_window'
+require_relative 'speech_button'
 require_relative 'text_view'
 require_relative 'theme_switcher'
 require_relative 'utils'
@@ -34,11 +35,17 @@ require_relative 'utils'
 # Three deliberate departures, each forced by what this machine's bindings
 # ship, and each one named in the port's notes rather than papered over:
 #
-# * Text-to-speech is left out. Upstream plays the provider's audio through a
-#   GStreamer playbin, and there is no Gst typelib in the dev shell, so there
-#   is nothing to play it with. The speech buttons, the `listen-src` and
-#   `listen-dest` actions and the Text-to-Speech shortcuts group go with it:
-#   a button wired to an action that cannot work is worse than no button.
+# * Text-to-speech playback is left out. Upstream plays the provider's audio
+#   through a GStreamer playbin, and there is no Gst typelib in the dev shell,
+#   so there is nothing to play it with. The `listen-src`/`listen-dest`
+#   actions and the Text-to-Speech shortcuts group go with it: an action wired
+#   to playback that cannot work is worse than no action. The SpeechButton
+#   widget itself (see speech_button.rb) is still built into both toolbars,
+#   in the same slots upstream's window.blp puts them, because that mirrors
+#   what upstream's own window.py does when no TTS provider is configured:
+#   `load_tts` hides `src_speech_btn`/`dest_speech_btn` outright rather than
+#   leaving them half-wired. #src_speech_btn and #dest_speech_btn start
+#   hidden here for the same reason, not because the widget is unfinished.
 #   (Spell checking, upstream's other libspelling-reader, is wired for real —
 #   see #setup_spell_checking — because the libspelling and gtksourceview5
 #   gems exist and the src text view is a GtkSource::View; see text_view.rb.)
@@ -556,6 +563,16 @@ class Window
   def clear_btn = @clear_btn ||= action_button('win.clear', 'Clear', 'edit-clear-symbolic')
   def paste_btn = @paste_btn ||= action_button('win.paste', 'Paste', 'edit-paste-symbolic')
 
+  # No `listen-src` action exists (see the class comment), and upstream hides
+  # this button outright whenever no TTS provider is loaded, so it starts
+  # hidden rather than wired to an action that cannot work.
+  def src_speech_btn
+    @src_speech_btn ||= SpeechButton.new.build.tap do |button|
+      button.add_css_class('flat')
+      button.visible = false
+    end
+  end
+
   def char_counter
     @char_counter ||= Gtk::Label.new.tap do |label|
       label.margin_start = 4
@@ -628,6 +645,14 @@ class Window
   end
 
   def edit_btn = @edit_btn ||= action_button('win.suggest', 'Suggest Translation', 'document-edit-symbolic')
+
+  # Same reasoning as #src_speech_btn: no `listen-dest` action, starts hidden.
+  def dest_speech_btn
+    @dest_speech_btn ||= SpeechButton.new.build.tap do |button|
+      button.add_css_class('flat')
+      button.visible = false
+    end
+  end
 
   def edit_toolbar
     @edit_toolbar ||= Gtk::Box.new(:horizontal, 0).tap do |box|
@@ -821,6 +846,7 @@ class Window
         src_toolbar.tap do |toolbar|
           toolbar.append(clear_btn)
           toolbar.append(paste_btn)
+          toolbar.append(src_speech_btn)
           toolbar.append(char_counter)
           toolbar.append(translate_btn)
         end
@@ -850,6 +876,7 @@ class Window
             toolbar.append(trans_warning)
             toolbar.append(copy_btn)
             toolbar.append(edit_btn)
+            toolbar.append(dest_speech_btn)
           end
 
           edit_toolbar.tap do |toolbar|

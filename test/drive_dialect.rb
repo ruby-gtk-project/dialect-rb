@@ -1921,19 +1921,51 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
   # without being driven.
 
   d.step("the components this round leaves out are absent, not half-built") do
-    # Text-to-speech: no Gst typelib in the dev shell, so there is nothing to
-    # play a provider's audio with.
+    # Text-to-speech playback: no Gst typelib in the dev shell, so there is
+    # nothing to play a provider's audio with. No action is registered for
+    # either button; see window.rb's class comment.
     %w[listen-src listen-dest].each do |name|
       d.check("win.#{name} is not registered") { !app.window.window.has_action?(name) }
     end
-    d.check("there is no speech button class") { !Object.const_defined?(:SpeechButton) }
-    d.check("and no speech button in the source toolbar") do
+  end
+
+  d.step("the speech button widget is built in but starts inert") do
+    d.check("SpeechButton is defined") { Object.const_defined?(:SpeechButton) }
+    d.check("both buttons are instances of it") do
+      app.window.src_speech_btn.is_a?(SpeechButton) && app.window.dest_speech_btn.is_a?(SpeechButton)
+    end
+    d.check("the source toolbar carries the speech button widget") do
       app.window.src_toolbar.observe_children.then do |children|
         Array.new(children.n_items) { |i| children.get_item(i) }
-             .none? { |child| child.css_classes.include?("speech-button") }
+             .any? { |child| child.css_classes.include?("speech-button") }
       end
     end
-    d.check("the broken-speakers icon is carried anyway, for when it lands") do
+    d.check("the destination toolbar carries the speech button widget") do
+      app.window.dest_toolbar.observe_children.then do |children|
+        Array.new(children.n_items) { |i| children.get_item(i) }
+             .any? { |child| child.css_classes.include?("speech-button") }
+      end
+    end
+    d.check("both start hidden, matching upstream's no-TTS-provider state") do
+      !app.window.src_speech_btn.visible? && !app.window.dest_speech_btn.visible?
+    end
+    d.check("the four upstream stack pages exist on each button") do
+      %w[ready progress error loading].all? do |page|
+        app.window.src_speech_btn.stack.get_child_by_name(page) &&
+          app.window.dest_speech_btn.stack.get_child_by_name(page)
+      end
+    end
+    d.check("the ready/progress/error/loading transitions run without raising") do
+      app.window.src_speech_btn.tap do |button|
+        button.ready
+        button.progress(0.5)
+        button.error("Text-to-Speech failed")
+        button.loading
+        button.ready
+      end
+      true
+    end
+    d.check("the broken-speakers icon is carried for the error state") do
       Gtk::IconTheme.get_for_display(Gdk::Display.default)
                     .has_icon?("dialect-speakers-broken-symbolic")
     end
