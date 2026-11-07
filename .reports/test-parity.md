@@ -4,85 +4,85 @@
 
 `git ls-tree -r --name-only origin/main | grep -iE 'test|spec'` returns
 nothing. Upstream's CI (`.github/workflows/CI.yml`) runs `codespell` and a
-Flatpak build with `run-tests: true`, but there is no `test/` or `tests/`
+Flatpak build with `run-tests: true`, but there is no `test/`/`tests/`
 directory anywhere in the Python source — `run-tests` has nothing to run.
-So "port every upstream test" is vacuously satisfied: there are zero to port.
-That does not mean nothing is owed here — a GUI app with no upstream tests
-still needs *some* way to verify the port behaves like the original, which is
-what the rest of this report checks.
+"Port every upstream test" is vacuously satisfied: there are zero to port.
+That does not mean nothing is owed — a GUI app with no upstream tests still
+needs *some* way to verify the port behaves like the original, which is what
+the rest of this report checks.
 
-## The rspec suite exists as scaffolding only, and is currently broken
+## The rspec suite is still scaffolding only, and still cannot load — unchanged from last round
 
 `spec/` contains exactly two files: `spec_helper.rb` and `README.md`. Zero
-actual spec files (`*_spec.rb`) exist anywhere in the repo. The harness is
-not just empty, it does not load. The dev shell's own banner names the
-command to run it:
+`*_spec.rb` files exist anywhere in the repo. Re-run this round:
 
-    ruby -e 'require "rspec/core"; exit RSpec::Core::Runner.run(["--format", "progress", "--require", "spec_helper", "spec"])'
+    nix develop --command ruby -e 'require "rspec/core"; exit RSpec::Core::Runner.run(["--format","progress","--require","spec_helper","spec"])'
+    → LoadError: cannot load such file -- kettle/test/rspec
+    → 0 examples, 0 failures, 2 errors occurred outside of examples
 
-Running it (this session, inside `nix develop`):
+Nothing about this has changed since the gem was last reported broken: the
+harness `spec/README.md` describes in detail (`stub_env`, `block_is_expected`,
+`pending_for`, etc.) is unreachable because `spec_helper.rb` cannot even
+`require` its own stated dependency in this dev shell. This is a suite that
+has never been executed successfully — unverified, not done, regardless of
+how complete the README's description of it reads.
 
-    An error occurred while loading spec_helper.
-    Failure/Error: require "kettle/test/rspec"
-    LoadError: cannot load such file -- kettle/test/rspec
-    0 examples, 0 failures, 2 errors occurred outside of examples
+## The real verification is `test/drive_dialect.rb`, and it is not a port of any upstream test
 
-`bundle exec rspec` fails the same way one layer earlier — `rspec-core is not
-currently included in the bundle`. The `kettle-test` gem `spec/README.md`
-describes as the harness is not resolvable in this dev shell at all. This is
-a suite that has never been executed successfully, exactly the kind of gap
-the task calls out by name: it is unverified, not done, regardless of how
-complete `spec/README.md`'s description of its helpers reads.
-
-## The real verification is `test/drive_dialect.rb`, and it is not an upstream port
-
-`test/drive_dialect.rb` (2008 lines) plus `test/gtk_driver.rb` is a
-house-written headless UI driver — "copied unchanged from the reference
-harness in tally-rb" per `.reports/drive-harness.md` — not a port of any
-upstream test, because none exist. It is the project's actual test suite in
-practice, and it does run:
+`test/drive_dialect.rb` (2040 lines, 46 `d.step` blocks) plus
+`test/gtk_driver.rb` — "copied unchanged from the reference harness in
+tally-rb" per `.reports/drive-harness.md` — is a house-written headless UI
+driver, not a port of any upstream test, because none exist. It is the
+project's actual test suite in practice. Re-run this round, independently:
 
     nix develop --command xvfb-run -a ruby test/drive_dialect.rb
-    → 542 of 542 checks passed / DRIVE OK   (fresh run, this session, exit 0)
+    → 547 of 547 checks passed / DRIVE OK
 
-This is real, not a rubber stamp: it drives the live `Adw::ApplicationWindow`,
-asserts widget state, round-trips settings to disk, and exercises the search
-provider over a real D-Bus session bus.
+This matches the round's own runtime gate (`drive_ok=true`, 547/547, 37
+components) exactly, and is a real result, not a rubber stamp — it drives the
+live `Adw::ApplicationWindow`, round-trips settings to disk, exercises the
+search provider over a real D-Bus session bus, and (per step 41) explicitly
+asserts that `win.listen-src`/`win.listen-dest` are *not* registered, rather
+than papering over that absence.
 
-## The runtime gate for this round contradicts that result, and the
-contradiction itself is unresolved
+**But it took about 15 minutes of wall-clock time to get that result**, on a
+machine running dozens of other forks' concurrent `xvfb-run`/`ruby`
+processes (36+ Xvfb-related processes observed via `ps aux` during this
+session), and a first attempt under an external 300-second timeout produced
+no output at all before being killed. This is the same non-determinism the
+previous round's reports flagged (gate reported `drive_ok=false, 0/0` then,
+against a clean manual 542/542) — it reproduced again this round, just in
+the other direction (gate green, my own first attempt silent/timed out). The
+gate's 547/547 this round is corroborated by my own eventual rerun, so I am
+not disputing this round's result — but a suite whose pass/fail depends on
+how loaded the shared machine happens to be when it is run is not a
+reliable verification signal on its own merits, and that underlying fragility
+is unresolved across two rounds now.
 
-This round's gate reports **drive_ok=false, 0 checks passed, 0 failed**,
-covering 49 components — i.e., from the harness's point of view, the drive
-run did not produce a result at all this round, not even a partial fail.
-My own first attempt reproduced something consistent with that: run under an
-external `timeout 180`, the process was still alive and had done nothing
-past 195 elapsed seconds, and never printed a result before being superseded.
-A second, unconstrained run (no external timeout) completed cleanly in the
-same dev shell on the same tree: 542/542, exit 0.
+## A specific gap the drive suite itself does not exercise
 
-I cannot explain the gap between these two outcomes from inside this
-session — this machine is running many other forks' drive scripts
-concurrently (`ps aux` showed other ports' `xvfb-run`/`ruby` processes
-throughout), so slow Xvfb/nix-develop startup under load is a plausible but
-unconfirmed cause. What matters for parity accounting: **the gate's own
-measurement for this round is a failure, and a failure or non-terminating
-drive run is a gap in its own right per this audit's own ground rule**,
-whatever a manually re-run copy later showed. Treat `drive_ok=false` as the
-round's result. The discrepancy needs an explicit fix, not averaging-away:
-either the harness needs to tolerate the concurrent-load environment (longer
-timeout, retry, or a lock so only one fork's drive script runs at a time), or
-something about the checked-in state only fails under the gate's exact
-invocation and needs reproducing exactly as the gate runs it, not as I ran
-it by hand.
+Step 19 ("the shortcuts window lists upstream's shortcuts") checks
+`ShortcutsWindow::SECTIONS.length == 3` and labels the check "it has
+upstream's three groups" (`test/drive_dialect.rb:976`). Upstream's
+`shortcuts.blp` has **four** `ShortcutsGroup`s (Translator, Text-to-Speech,
+Navigation, General), not three. No check anywhere in the 547 asserts that
+the Text-to-Speech group is absent, or that it should exist — the suite is
+internally consistent with the port's own (incomplete) shape, not with
+upstream's. A component no check exercises against the right target is
+unverified, not done, exactly per this audit's ground rule. See
+`accountability-ensurance.md` for why this is a false-green finding, not
+just a missing-coverage one.
 
 ## Verdict
 
-- Upstream test parity: vacuous (0 upstream tests) — not a gap in the
-  "port every test" sense.
-- rspec suite: scaffolded, never run successfully, currently cannot load its
-  own harness gem. **Gap.**
-- `drive_dialect.rb`: real, substantial, passes when I run it directly.
-  **But this round's own gate says the drive run failed (0/0), and that
-  result, not my manual rerun, is what this audit is required to treat as
-  ground truth.** Unverified-by-the-gate is a gap, full stop.
+- Upstream test parity: vacuous (0 upstream tests) — not a gap in the "port
+  every test" sense.
+- rspec suite: scaffolded, still cannot load its own harness gem. **Gap,
+  unchanged.**
+- `drive_dialect.rb`: real, substantial, reproduced green this round
+  (547/547, matching the gate). **But** (a) it is slow and occasionally
+  silent/non-terminating under shared-machine load, a reliability gap that
+  has now shown up in two consecutive rounds, and (b) at least one of its own
+  checks asserts the port's shape against itself rather than against
+  upstream (the "three groups" check), which is a false-green pattern, not
+  mere undercoverage. **Gap.**

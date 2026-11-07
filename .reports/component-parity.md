@@ -1,70 +1,81 @@
 # Component parity — dialect-rb vs upstream `origin/main`
 
 Builds on `.reports/component-identification.md` and the standing 37-unit map
-in `.reports/component-inventory.md`. This report asks the behavioral
-question per unit: does the port's component do what upstream's does, not
-just exist.
+in `.reports/component-inventory.md`. Per unit: does the port's component do
+what upstream's does, not just exist. Re-verified against the tree as of
+`c3fcdf9` ("Wire the already-ported SpeechButton into the window toolbars"),
+the most recent widget-touching commit on `ruby`.
 
-## Verified at parity (36 of 37 units)
+## Verified at parity (35 of 37 units, unchanged from the prior round)
 
-Units 1–10, 12–36 are present and, per `component-inventory.md`'s per-unit
-detail plus the independent verification below, behave the same: window
-states (loading/error/API-key/translation), both language selectors and
-their search/recent lists, the theme switcher writing through to settings and
-the style manager, the two `GtkSource::View`-backed text views sharing font
-size, the character counter against each provider's limit, the preferences
-dialog and its provider subpage, the shortcuts dialog (`Adw::ShortcutsDialog`
-substituting for the unconstructable `Gtk::ShortcutsWindow`, a documented and
-correct binding workaround, not a behavior gap), the About dialog, all seven
-providers behind the shared base class and registry, the HTTP session on
-real `Soup::Session`, the async helper, the stylesheet loader, the icon
-assets, and the GNOME Shell search provider (unit 35, independently exercised
-over a real D-Bus session bus per the drive harness's unit 42).
+Units 1–10, 12–36 are present and behave the same: window states, both
+language selectors, the theme switcher, the two `GtkSource::View`-backed text
+views, the preferences dialog and subpage, the About dialog, all seven
+providers, the HTTP session, the async helper, the stylesheet loader, the
+icon assets, and the GNOME Shell search provider.
 
-I re-ran the live driver myself (not trusting the committed claim — see
-`accountability-ensurance.md` for why that trust would have been misplaced)
-and confirmed these pass against the real, running widget tree:
+Independently re-driven this round:
 
     nix develop --command xvfb-run -a ruby test/drive_dialect.rb
-    → 542 of 542 checks passed / DRIVE OK (fresh run, this session)
+    → 547 of 547 checks passed / DRIVE OK
 
-## Gap 1 — unit 11, the speech button (text-to-speech)
+This took roughly 15 minutes of wall-clock time to complete on this machine —
+dozens of other forks' `xvfb-run`/`ruby` processes were running concurrently
+(`ps aux` showed 36+ Xvfb-related processes at one point) and a first attempt
+under an external `timeout 300` never produced output before being killed.
+A second, unconstrained run against the identical tree did complete and
+matches the gate's own claim (`drive_ok=true`, 547/547, 37 components)
+exactly. Noted here because it reproduces, now for the second round running,
+the exact non-determinism `test-parity.md` and `accountability-ensurance.md`
+flagged last round — it is environmental (shared-machine contention), not a
+regression in the port, but a drive run that only completes reliably when
+nobody else happens to be using the machine is not a drive run anyone outside
+this fleet can treat as "it just passes."
 
-`lib/speech_button.rb` implements the widget, its four states and its CSS
-class. It is never instantiated by `lib/window.rb`. Concretely absent:
+## Gap 1 — unit 11, text-to-speech: narrower than last round, but still a real gap
 
-- `win.listen-src` and `win.listen-dest` actions — not installed anywhere
-- The `<Primary>L` / `<Primary><Shift>L` accelerators from unit 1 — bound to
-  nothing, since the actions they target don't exist
-- No `SpeechButton` instance anywhere in the translation view's toolbars
+What changed: `lib/speech_button.rb`'s `SpeechButton` is now instantiated
+twice (`src_speech_btn`, `dest_speech_btn`) and appended into both toolbars in
+upstream's slots. That part of the previous finding is closed.
 
-This is accurately represented, not hidden: `test/drive_dialect.rb` unit 41
-tests for the *absence* explicitly (`win.listen-src is not registered`, etc.),
-and `component-inventory.md` calls it out by name. The stated blocker (no
-GStreamer typelib in the dev shell for audio playback) explains why
-*playback* can't be finished, but does not explain why the button isn't
-wired into the toolbar in a disabled/stub state — that part is simply not
-done, and the inventory says so.
+What is still missing, confirmed against `window.py:179-200` and
+`shortcuts.blp:60-71`:
 
-**User-visible effect:** a user running the port cannot click a speaker icon
-to hear a pronunciation, cannot invoke it by keyboard, and sees no stub
-indicating the feature exists but is unavailable — the toolbar slot upstream
-puts it in just isn't there.
+- **`win.listen-src` / `win.listen-dest` actions** — upstream always
+  registers both (disabled by default, enabled per-provider); the port
+  registers neither. `grep -n listen lib/window.rb` shows zero `add_action`
+  calls for either name.
+- **The `<Primary>L` / `<Primary><Shift>L` accelerators** — bound to nothing,
+  since the actions they'd target don't exist.
+- **The Text-to-Speech `ShortcutsGroup`** — two rows ("Listen to source
+  text", "Listen to translation") that upstream's shortcuts window always
+  shows (disabled-looking accelerators or not) are absent from the port's
+  shortcuts dialog entirely; `ShortcutsWindow::SECTIONS` has 3 keys where
+  upstream's `shortcuts.blp` has 4 groups.
+- Both buttons are permanently `visible = false` — there is no live path by
+  which a user of this port ever sees them, regardless of which provider is
+  selected, where upstream shows/hides them per-provider's TTS support.
+
+**User-visible effect, same as last round:** nobody using this port can
+invoke text-to-speech by click or by keyboard, and the keyboard-shortcuts
+reference no longer even lists that the feature exists. The widget being
+`append`ed but permanently hidden is closer to upstream's shape than last
+round's "not instantiated at all," but it does not change the user-facing
+verdict: the feature is still entirely non-functional and now also removed
+from the shortcuts window's own listing of what exists.
 
 ## Gap 2 — unit 37, live translation (gettext)
 
-Covered fully in `.reports/translation-parity.md`; recorded here because it
-is also a component-behavior gap, not just a missing-string gap: every label,
-menu item, dialog title and error message in the port is a hardcoded English
-literal. A user with `LANG` set to anything but English gets the same English
-UI upstream only shows when no translation is installed. This is a real
-behavioral difference across all 36 "present" units above — presence of the
-right widget with the wrong (untranslatable) string is not full parity for
-any of them, so it is recorded once here rather than as a per-unit footnote.
+Unchanged, covered fully in `translation-parity.md`: every label, menu item,
+dialog title and error message in the port is a hardcoded English literal.
+0 of 123 msgids are reachable at runtime. Recorded here because it is a
+component-behavior gap across all 35 "present" units above, not a separate
+37th unit in isolation.
 
 ## Verdict
 
-2 of 37 units have a genuine, acknowledged behavior gap. Neither gap is new;
-both were already on record before this round. No regression and no
-previously-undocumented gap was found by the fresh scan or by re-driving the
-app.
+2 of 37 units still have a real, user-visible behavior gap. Neither is new
+this round, though unit 11's shape changed (widget now present but inert, and
+a specific missing shortcuts group is now named explicitly rather than folded
+into "no actions"). No regression found; no new previously-undocumented gap
+beyond the shortcuts-group item above.
