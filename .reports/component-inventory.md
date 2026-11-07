@@ -5,7 +5,7 @@ on the `ruby` branch. Produced with the `component-identification` skill;
 widget/CSS/signal facets read off the `.blp`/`.ui` files, actions and
 runtime-built widgets read off the Python.
 
-**State of the port (updated 2026-11-06):** the non-widget half was ported
+**State of the port (updated 2026-11-07):** the non-widget half was ported
 first — settings, languages, the build-time constants, the HTTP session, the
 async helper, the stylesheet loader and all seven providers behind their base
 class, registry, error types and per-provider settings (units 17–34). The UI
@@ -15,17 +15,26 @@ its states and the whole translation view, both language selectors and their
 rows, the theme switcher, the text views, the preferences dialog and its
 provider subpage, the shortcuts window and the two icon assets. The scaffold
 status page is gone; `lib/dialect/application.rb` has been replaced by
-`lib/main.rb`.
+`lib/main.rb`. The `soup3`, `libspelling` and `gtksourceview5` gems have since
+been wired in: `lib/session.rb` runs on a real `Soup::Session` instead of a
+hand-rolled HTTP client, `lib/text_view.rb` subclasses `GtkSource::View`, and
+`lib/window.rb` attaches a `Spelling::TextBufferAdapter` to the source buffer
+— so unit 4's spell checking and unit 13's GtkSourceView base are both now
+**present**, not downgraded.
 
-**Still absent:** unit 11 (the speech button) and the `win.listen-src` /
-`win.listen-dest` actions it drives, because there is no GStreamer typelib in
-the dev shell to play a provider's audio with — this is a deliberate,
-documented departure (see the header comment of `lib/window.rb`), not an
-oversight; unit 35 (the GNOME Shell search provider); and unit 37 (the
-translation catalogs). Upstream's spell checking, part of unit 4, is absent
-for the same reason as the speech button — no Spelling typelib. Each is
-driven as absent by `test/drive_dialect.rb`, so none of them can be mistaken
-for done.
+**Still absent or incomplete:** unit 11 (`lib/speech_button.rb`) has been
+written — the widget itself, its four states and its CSS class all exist —
+but nobody has wired it into `lib/window.rb`: the window installs no
+`win.listen-src` / `win.listen-dest` actions, builds no `SpeechButton`
+instance, and the accelerators `<Primary>L` / `<Primary><Shift>L` from unit 1
+go nowhere. The stated reason is there is no GStreamer typelib in the dev
+shell to play a provider's audio with, which blocks the *playback* half, but
+nothing blocks wiring the button itself into the toolbar in a disabled or
+stub state — that part is simply not done. Unit 35 (the GNOME Shell search
+provider) and unit 37 (the translation catalogs, `po/` not checked out) are
+both still entirely absent, with no file at all. Each is driven as absent (or,
+for unit 11, as unused) by `test/drive_dialect.rb`, so none of them can be
+mistaken for done.
 
 House shape follows the pilot at `gnome-contacts-rb`: flat `lib/*.rb`, one
 upstream unit per file, `# frozen_string_literal: true` + `require 'adwaita'` +
@@ -42,16 +51,16 @@ widget accessors configured in `.tap`. The application class lands in
 | 1 | `dialect/main.py` | `lib/main.rb` | application | **yes** |
 | 2 | `dialect/main.py` (`_on_about`), `data/app.drey.Dialect.metainfo.xml.in.in` | `lib/main.rb` | dialog (About) | **yes** |
 | 3 | `dialect/window.blp` (`menu app-menu`) | `lib/main_menu.rb` | menu model | **yes** |
-| 4 | `dialect/window.blp`, `dialect/window.py` | `lib/window.rb` | window | **yes** (no spell checking — no Spelling typelib) |
+| 4 | `dialect/window.blp`, `dialect/window.py` | `lib/window.rb` | window | **yes** (spell checking wired via `Spelling::TextBufferAdapter`) |
 | 5 | `dialect/window.blp` (`loading_page`) | `lib/window.rb` | loading state | **yes** |
 | 6 | `dialect/window.blp` (`error_page`), `window.py` `show_translator_error_view` | `lib/window.rb` | error state | **yes** |
 | 7 | `dialect/window.blp` (`key_page`), `window.py` `show_translator_api_key_view` | `lib/window.rb` | error state (API key) | **yes** |
 | 8 | `dialect/window.blp` (`translator_box` + toolbars) | `lib/window.rb` | page (translation view) | **yes** (no speech buttons — see unit 11) |
 | 9 | `dialect/widgets/lang_selector.blp`, `lang_selector.py` (`LangSelector`) | `lib/lang_selector.rb` | widget (popover selector) | **yes** |
 | 10 | `dialect/widgets/lang_row.blp`, `lang_selector.py` (`LangRow`) | `lib/lang_row.rb` | row | **yes** |
-| 11 | `dialect/widgets/speech_button.blp`, `speech_button.py` | `lib/speech_button.rb` | widget (button) | no (no Gst typelib to play the audio) |
+| 11 | `dialect/widgets/speech_button.blp`, `speech_button.py` | `lib/speech_button.rb` | widget (button) | partial — widget class written, not instantiated by `lib/window.rb`; no `win.listen-src`/`win.listen-dest` actions |
 | 12 | `dialect/widgets/theme_switcher.blp`, `theme_switcher.py` | `lib/theme_switcher.rb` | widget (menu custom slot) | **yes** |
-| 13 | `dialect/widgets/textview.py` | `lib/text_view.rb` | widget (text view) | **yes** (on Gtk::TextView — no GtkSourceView typelib) |
+| 13 | `dialect/widgets/textview.py` | `lib/text_view.rb` | widget (text view) | **yes** (on `GtkSource::View`, via the `gtksourceview5` gem) |
 | 14 | `dialect/preferences.ui`, `dialect/preferences.py` | `lib/preferences_dialog.rb` | preferences dialog | **yes** |
 | 15 | `dialect/widgets/provider_preferences.blp`, `provider_preferences.py` | `lib/provider_preferences.rb` | preferences subpage | **yes** |
 | 16 | `dialect/shortcuts.blp`, `dialect/shortcuts.py` | `lib/shortcuts_window.rb` | keyboard shortcuts | **yes** (Adw.ShortcutsDialog — Gtk::ShortcutsWindow cannot be constructed) |
@@ -306,6 +315,10 @@ Repeater: one `LangRow` per `LangObject` in each list — hundreds of rows from
 
 `Gtk.Button` subclass, class `speech-button`, tooltip _Listen_. Four states
 driven by `ready()`, `progress(fraction)`, `error(message)`, `loading()`.
+`lib/speech_button.rb` ports this widget class and all four states, but
+`lib/window.rb` never instantiates it, installs no `win.listen-src` /
+`win.listen-dest` actions, and wires no `playbin` to drive it — the window's
+`src_speech_btn` / `dest_speech_btn` slots in unit 8 are simply absent.
 
 | Widget | × | CSS | Notes |
 |---|---:|---|---|
@@ -517,8 +530,9 @@ the language code as msgctxt).
 
 ## Totals
 
-* 37 units; 34 present in `lib/` (units 1–10, 12–34, 36), 3 absent
-  (11 — speech button, by deliberate design; 35 — search provider; 37 — po/).
+* 37 units; 34 present in `lib/` (units 1–10, 12–34, 36), 1 partial (11 —
+  `SpeechButton` is written but not wired into the window), 2 absent with no
+  file at all (35 — search provider; 37 — po/).
 * 4 top-level states in one `Gtk.Stack` (loading / error / api-key / translate),
   2 layouts behind one `Adw.Breakpoint`.
 * 20 window actions + 4 app actions; 16 accelerator bindings.
@@ -531,29 +545,34 @@ the language code as msgctxt).
 ## Blockers for the port
 
 1. **`po/` is not checked out.** Translation parity cannot be assessed, let
-   alone reproduced, until the submodule is fetched.
-2. **No GtkSourceView in the dev shell** (`require "gtksourceview5"` fails).
-   `TextView` subclasses `GtkSource.View` upstream; the port has to either add
-   the dependency or build on `Gtk::TextView` and record the downgrade.
-3. **No GStreamer in the dev shell** (`require "gst"` fails). Text-to-speech
-   playback, the progress feed into `SpeechButton`, and `win.listen-src` /
-   `win.listen-dest` have no audio path.
-4. **No libspelling binding.** The source-buffer spell checking, its extra
-   context menu and the language-picking logic in `window.py` have no
-   equivalent.
+   alone reproduced, until the submodule is fetched. No work has been done on
+   this.
+2. ~~**No GtkSourceView in the dev shell**~~ — resolved: the `gtksourceview5`
+   typelib is now in `gtkStack`, `lib/text_view.rb` subclasses
+   `GtkSource::View`, matching upstream.
+3. **No GStreamer typelib in the dev shell** (`require "gst"` still fails).
+   Text-to-speech playback and the progress feed into `SpeechButton` have no
+   audio path. This blocks only the *playback*; it does not explain why
+   `lib/speech_button.rb` (unit 11) was never instantiated from
+   `lib/window.rb` — the button could exist in a disabled state, and nobody
+   did that work.
+4. ~~**No libspelling binding**~~ — resolved: the `libspelling` typelib is in
+   `gtkStack`, and `lib/window.rb` attaches a `Spelling::TextBufferAdapter` to
+   the source buffer, matching upstream's `setup_spell_checking`.
 5. **No libsecret binding.** API keys are stored in the secret service
    upstream; the port needs another store, which changes what
-   `ProviderPreferences` can promise.
-6. ~~**No libsoup binding**~~ — resolved: `lib/session.rb` rewrites
-   `soup.py`/`session.py` on Ruby's own HTTP stack, keeping the
-   `Session.get`/`post` shape the providers call.
+   `ProviderPreferences` can promise. No work has been done on this.
+6. ~~**No libsoup binding**~~ — resolved: `lib/session.rb` now runs on a real
+   `Soup::Session` from the `soup3` gem, keeping the `Session.get`/`post`
+   shape the providers call.
 7. **Provider scope is undecided.** Seven network providers, several needing
    API keys, cannot all be exercised; which ones ship decides which
    preference rows and error states are even reachable.
-8. **No `PLAN.md` yet.** With units 1–10, 12–34 and 36 now landed, the
-   remaining work is unit 35 (search provider — needs a D-Bus binding
-   decision), unit 37 (fetch the `po/` submodule), and deciding whether unit
-   11 (speech button) stays dropped for lack of GStreamer or gets revisited.
+8. **No `PLAN.md` yet.** With units 1–10, 12–34 and 36 now landed (unit 11
+   partially — see above), the remaining work is unit 35 (search provider —
+   needs a D-Bus binding decision), unit 37 (fetch the `po/` submodule), and
+   wiring the already-ported `SpeechButton` into the window now that unit 4's
+   and unit 13's typelib blockers are both cleared.
 
 Dev shell confirms the widget side is available: GTK 4.22.4 with
 `Adwaita::MultiLayoutView`, `Layout`, `LayoutSlot`, `Breakpoint`, `Spinner`,
