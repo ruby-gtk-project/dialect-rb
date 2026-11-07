@@ -2,6 +2,7 @@
 
 require 'gio2'
 require 'json'
+require 'socket'
 require 'soup3'
 require 'uri'
 

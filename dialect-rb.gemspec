@@ -93,7 +93,7 @@ Gem::Specification.new do |spec|
   ]
   spec.bindir = "exe"
   # Listed files are the relative paths from bindir above.
-  spec.executables = ["dialect"]
+  spec.executables = ["dialect", "dialect-search-provider"]
   spec.require_paths = ["lib"]
 
   # Runtime toolkit. The app is a GTK4/Libadwaita window, so these three load

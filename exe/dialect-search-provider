@@ -1,0 +1,11 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# The GNOME Shell search provider service, the port's equivalent of upstream's
+# dialect/search_provider/search_provider.in. The shell starts it on demand
+# through the app.drey.Dialect.SearchProvider bus name; it is not meant to be
+# run by hand, beyond checking that it registers.
+
+require 'search_provider'
+
+SearchProvider.run(binary: ENV.fetch('DIALECT_BIN', 'dialect'))

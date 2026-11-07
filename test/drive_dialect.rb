@@ -1937,9 +1937,51 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
       Gtk::IconTheme.get_for_display(Gdk::Display.default)
                     .has_icon?("dialect-speakers-broken-symbolic")
     end
-    # The GNOME Shell search provider and the translation catalogs.
-    d.check("there is no search provider class") { !Object.const_defined?(:SearchProvider) }
-    d.check("and no po directory") { !Dir.exist?(File.expand_path("../po", __dir__)) }
+  end
+
+  # --- the GNOME Shell search provider ------------------------------------
+  #
+  # Driven against the registered DriveProvider, offline, exactly as every
+  # other provider-backed step in this script is: no real search provider
+  # process, no real D-Bus connection (that is proven separately, against a
+  # real session bus, in test/drive_search_provider_dbus.rb-shaped runs — see
+  # lib/search_provider.rb's class comment), just the Ruby object's own
+  # methods.
+  d.step("the GNOME Shell search provider answers searches") do
+    search_provider = SearchProvider.new(binary: "true")
+
+    d.check("GetInitialResultSet prompts when live search is off") do
+      search_provider.initial_result_set(["hi"]) == ["Translate “hi” with Drive Probe"]
+    end
+
+    Settings.get.live_translation = true
+    Settings.get.sp_translation = true
+
+    d.check("GetInitialResultSet translates once live search is on") do
+      search_provider.initial_result_set(["hello"]) == ["hello", "copy-to-clipboardhello"]
+    end
+    d.check("the translation came back reversed, from DriveProvider") do
+      search_provider.result_metas(["hello"]).first.fetch("name") == "olleh"
+    end
+    d.check("GetResultMetas on the pair also returns the clipboard row") do
+      metas = search_provider.result_metas(["hello", "copy-to-clipboardhello"])
+      metas.length == 2 && metas.last.fetch("clipboardText") == "olleh"
+    end
+    d.check("GetSubsearchResultSet re-runs the same search") do
+      search_provider.subsearch_result_set([], ["hello"]) == ["hello", "copy-to-clipboardhello"]
+    end
+    d.check("the interface info resolves through lookup_interface") do
+      search_provider.interface_info.name == "org.gnome.Shell.SearchProvider2"
+    end
+
+    Settings.get.live_translation = false
+    Settings.get.sp_translation = false
+  end
+
+  d.step("the translation catalogs are checked out") do
+    po_dir = File.expand_path("../po", __dir__)
+    d.check("po/ exists") { Dir.exist?(po_dir) }
+    d.check("the CLDR language catalog is there") { Dir.exist?(File.join(po_dir, "cldr-langs")) }
   end
 
   # --- 49. the window's close-request handler -----------------------------

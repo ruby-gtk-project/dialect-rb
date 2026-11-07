@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=app.drey.Dialect.SearchProvider
+Exec=/usr/bin/dialect-search-provider

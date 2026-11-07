@@ -30,11 +30,30 @@ instance, and the accelerators `<Primary>L` / `<Primary><Shift>L` from unit 1
 go nowhere. The stated reason is there is no GStreamer typelib in the dev
 shell to play a provider's audio with, which blocks the *playback* half, but
 nothing blocks wiring the button itself into the toolbar in a disabled or
-stub state — that part is simply not done. Unit 35 (the GNOME Shell search
-provider) and unit 37 (the translation catalogs, `po/` not checked out) are
-both still entirely absent, with no file at all. Each is driven as absent (or,
-for unit 11, as unused) by `test/drive_dialect.rb`, so none of them can be
-mistaken for done.
+stub state — that part is simply not done.
+
+Unit 35 (the GNOME Shell search provider) is now **present**:
+`lib/search_provider.rb` ports `TranslateServiceApplication` in full — live
+translation gated on both `live-translation` and `sp-translation`, the
+`Translate "{text}" with {provider}` prompt when live search is off, the
+`translation-error` and `copy-to-clipboard` id prefixes, and
+`ActivateResult`/`LaunchSearch` spawning the app — registered on its own
+`app.drey.Dialect.SearchProvider` bus name through `exe/dialect-search-provider`,
+proven end-to-end over a real D-Bus session bus with `gdbus call` against all
+five `org.gnome.Shell.SearchProvider2` methods (not just unit-tested as plain
+Ruby), with its `.ini`/`.service` registration files under `data/`.
+
+Unit 37's blocker is cleared the same way: `po/` is now a checked-out git
+submodule (`https://github.com/dialect-app/po`, at its current `main`).
+Checking it out is as far as this round took it — the Ruby source carries no
+`gettext` integration at all (no `bindtextdomain`, no string anywhere is
+wrapped in `_()`/`pgettext`), so the catalogs are present in the tree but
+nothing in `lib/` reads them yet. That is a distinct, much larger unit of
+work (the `translation-parity` skill's remit) that nobody has done; it does
+not get credited here as part of unit 37 being merely checked out.
+
+`test/drive_dialect.rb` still drives unit 11 as unused (the window builds no
+`SpeechButton`), so that gap cannot be mistaken for done.
 
 House shape follows the pilot at `gnome-contacts-rb`: flat `lib/*.rb`, one
 upstream unit per file, `# frozen_string_literal: true` + `require 'adwaita'` +
@@ -82,9 +101,9 @@ widget accessors configured in `.tap`. The application class lands in
 | 32 | `dialect/asyncio.py` | `lib/background_task.rb` | async helper | **yes** |
 | 33 | `dialect/utils.py` | `lib/utils.rb` | helpers | **yes** |
 | 34 | `dialect/style.css`, `dialect/style-dark.css` | `lib/style.rb` | stylesheet loader | **yes** |
-| 35 | `dialect/search_provider/search_provider.in` + `.ini`/`.service.in` | `lib/search_provider.rb` | GNOME Shell search provider | no |
+| 35 | `dialect/search_provider/search_provider.in` + `.ini`/`.service.in` | `lib/search_provider.rb` | GNOME Shell search provider | **yes** |
 | 36 | `dialect/icons/settings-symbolic.svg`, `icons/speakers-broken-symbolic.svg`, `dialect/dialect.gresource.xml` | `data/icons/` | icon assets | **yes** (`lib/icons.rb` adds them to the icon theme) |
-| 37 | `po/` (git submodule, `dialect` + `dialect-cldr-langs` domains) | `po/` | translations | no (submodule not checked out) |
+| 37 | `po/` (git submodule, `dialect` + `dialect-cldr-langs` domains) | `po/` | translations | submodule checked out; no gettext integration in `lib/` |
 
 ---
 
@@ -512,6 +531,36 @@ file by file.
 `copy-to-clipboard` / `translation-error`. Gated by the `sp-translation`
 setting and the _Show Translations in Desktop Search_ switch row.
 
+**Present.** `lib/search_provider.rb` runs as its own `Gio::Application`
+with the `IS_SERVICE` flag, owning `app.drey.Dialect.SearchProvider` and
+registering the object on the connection it gets at startup — the same
+shape `gnome-contacts-rb`'s and `Wordbook-rb`'s search providers use.
+`exe/dialect-search-provider` is the binary the D-Bus `.service` file (under
+`data/dbus-1/services/`) and the shell's own `.ini` (under
+`data/gnome-shell/search-providers/`) point at.
+
+Two binding quirks it works around, both discovered while driving it over a
+real bus rather than trusting `ruby -c`:
+
+* `Gio::DBusNodeInfo#interfaces` and `Gio::DBusMethodInfo#out_args` both come
+  back as a one-element array holding a stray `"\u0001"` rather than the
+  structs they should hold — unusable for upstream's trick of reading a
+  method's reply signature off its own introspection data at call time.
+  `#lookup_interface` returns a working `Gio::DBusInterfaceInfo`, so the
+  reply's GVariant type is written by hand per method instead (as the
+  gnome-contacts-rb pilot's `shell_search_provider.rb` already does).
+* `Gio::DBusConnection#register_object`'s method-call closure hands its
+  `parameters` argument already unpacked into a plain Ruby array (one native
+  value per `in` argument), not a `Gio::Variant` tuple to walk with
+  `#get_child_value` — confirmed by running the provider as its own process
+  against a private session bus (`dbus-run-session`) and calling every one
+  of its five methods with `gdbus call`.
+
+Not reused from a gem: no Ruby binding for GNOME Shell's search provider
+protocol exists, so the D-Bus interface, the GVariant reply encoding and the
+registration are all written against `gio2` directly, the same as every
+other Ruby GTK port in this fleet that ships one.
+
 ## 36 — icons
 
 `dialect-settings-symbolic` (the provider config buttons) and
@@ -521,18 +570,29 @@ missing-image placeholder, so they are part of the port, not decoration.
 
 ## 37 — translations
 
-`po/` is a git submodule (`https://github.com/dialect-app/po`, pinned at
-`366f2ad`) and is **not checked out** in this clone. Two gettext domains:
+`po/` is a git submodule (`https://github.com/dialect-app/po`) and is now
+**checked out**, at the tip of its `main` branch. Two gettext domains:
 `dialect` (UI strings) and `dialect-cldr-langs` (language names, looked up with
 the language code as msgctxt).
+
+Checking the submodule out is the entire extent of this round's work on
+unit 37. No Ruby file requires `gettext`, calls `bindtextdomain`, or wraps a
+single user-visible string in `_()` or `pgettext` — every string in `lib/`
+is still a bare English literal. The catalogs are in the tree; nothing reads
+them. Full translation parity (marking every string, loading the compiled
+catalogs, and keeping every language upstream ships) is a distinct, much
+larger unit of work that remains entirely undone — see the
+`translation-parity` skill, which nobody has run against this port yet.
 
 ---
 
 ## Totals
 
-* 37 units; 34 present in `lib/` (units 1–10, 12–34, 36), 1 partial (11 —
-  `SpeechButton` is written but not wired into the window), 2 absent with no
-  file at all (35 — search provider; 37 — po/).
+* 37 units; 36 present in `lib/` or the tree in some form (units 1–10, 12–37),
+  1 partial (11 — `SpeechButton` is written but not wired into the window).
+  Unit 37's "present" is the `po/` submodule being checked out only — the
+  Ruby source has no gettext integration at all, so translation parity itself
+  is not established.
 * 4 top-level states in one `Gtk.Stack` (loading / error / api-key / translate),
   2 layouts behind one `Adw.Breakpoint`.
 * 20 window actions + 4 app actions; 16 accelerator bindings.
@@ -544,9 +604,11 @@ the language code as msgctxt).
 
 ## Blockers for the port
 
-1. **`po/` is not checked out.** Translation parity cannot be assessed, let
-   alone reproduced, until the submodule is fetched. No work has been done on
-   this.
+1. ~~**`po/` is not checked out**~~ — resolved: the submodule is now checked
+   out at the tip of its `main` branch. Translation parity is still not
+   established — no string in `lib/` is marked for translation and nothing
+   calls `bindtextdomain` — that is unstarted work of its own, not a
+   consequence of this blocker.
 2. ~~**No GtkSourceView in the dev shell**~~ — resolved: the `gtksourceview5`
    typelib is now in `gtkStack`, `lib/text_view.rb` subclasses
    `GtkSource::View`, matching upstream.
@@ -568,11 +630,12 @@ the language code as msgctxt).
 7. **Provider scope is undecided.** Seven network providers, several needing
    API keys, cannot all be exercised; which ones ship decides which
    preference rows and error states are even reachable.
-8. **No `PLAN.md` yet.** With units 1–10, 12–34 and 36 now landed (unit 11
-   partially — see above), the remaining work is unit 35 (search provider —
-   needs a D-Bus binding decision), unit 37 (fetch the `po/` submodule), and
-   wiring the already-ported `SpeechButton` into the window now that unit 4's
-   and unit 13's typelib blockers are both cleared.
+8. **No `PLAN.md` yet.** With units 1–10, 12–37 now landed (unit 11 partially
+   — see above; unit 37 only to the extent of the submodule being checked
+   out), the remaining work is wiring the already-ported `SpeechButton` into
+   the window now that unit 4's and unit 13's typelib blockers are both
+   cleared, and the much larger job of actually marking strings and loading
+   `po/`'s catalogs for translation parity.
 
 Dev shell confirms the widget side is available: GTK 4.22.4 with
 `Adwaita::MultiLayoutView`, `Layout`, `LayoutSlot`, `Breakpoint`, `Spinner`,

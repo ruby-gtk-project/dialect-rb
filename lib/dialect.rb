@@ -14,6 +14,7 @@ require_relative "providers"
 require_relative "settings"
 require_relative "style"
 require_relative "icons"
+require_relative "search_provider"
 
 # Widgets, innermost first: each is built from the ones above it.
 require_relative "text_view"

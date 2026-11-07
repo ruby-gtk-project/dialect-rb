@@ -112,9 +112,14 @@
           gemdir = ./nix;
         };
 
-        # The launcher is whatever the gemspec installs into exe/. Reading the
-        # directory keeps this flake generic: no name to keep in step by hand.
-        launcher = builtins.head (builtins.attrNames (builtins.readDir ./exe));
+        # Every executable the gemspec installs from exe/. Reading the
+        # directory keeps this flake generic: no name to keep in step by
+        # hand. The main one — the app itself, as opposed to a D-Bus service
+        # like dialect-search-provider — is the shortest name, which is also
+        # the first alphabetically since every other executable in this repo
+        # extends it with a suffix (nix's attrNames sorts ASCIIbetically).
+        executables = builtins.attrNames (builtins.readDir ./exe);
+        launcher = builtins.head executables;
 
         # Optional directories: a port that has not grown translations or data
         # assets yet simply has none.
@@ -147,9 +152,11 @@
             for d in ${pkgs.lib.escapeShellArgs optionalDirs}; do
               cp -r "$d" $out/share/dialect/
             done
-            # exe/ sits next to lib/ so the launcher's `require "dialect"`
+            # exe/ sits next to lib/ so each launcher's `require "dialect"`
             # resolves against the copied tree.
-            install -Dm755 exe/${launcher} $out/share/dialect/exe/${launcher}
+            for exe in ${pkgs.lib.escapeShellArgs executables}; do
+              install -Dm755 "exe/$exe" "$out/share/dialect/exe/$exe"
+            done
 
             # Compile any GSettings schema the port ships.
             if [ -d data/schemas ]; then
@@ -160,17 +167,23 @@
 
             # -rbundler/setup puts the bundled gems on the load path, and
             # GI_TYPELIB_PATH keeps GObject-Introspection from re-registering
-            # types the cairo gem's C extension has already registered.
-            makeWrapper ${gems.wrappedRuby}/bin/ruby $out/bin/${launcher} \
-              --add-flags "-rbundler/setup" \
-              --add-flags "-I$out/share/dialect/lib" \
-              --add-flags "$out/share/dialect/exe/${launcher}" \
-              --set GI_TYPELIB_PATH "${typelibPath}" \
-              --prefix XDG_DATA_DIRS : "$out/share" \
-              --prefix XDG_DATA_DIRS : "$out/share/gsettings-schemas/dialect-0.1.0" \
-              --prefix XDG_DATA_DIRS : "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}" \
-              --prefix XDG_DATA_DIRS : "${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}" \
-              --prefix XDG_DATA_DIRS : "${pkgs.adwaita-icon-theme}/share"
+            # types the cairo gem's C extension has already registered. Every
+            # executable gets the same wrapper, not just the main one — the
+            # search provider is started by D-Bus activation, not by hand,
+            # but it needs the identical Ruby, load path and typelib
+            # environment to run at all.
+            for exe in ${pkgs.lib.escapeShellArgs executables}; do
+              makeWrapper ${gems.wrappedRuby}/bin/ruby "$out/bin/$exe" \
+                --add-flags "-rbundler/setup" \
+                --add-flags "-I$out/share/dialect/lib" \
+                --add-flags "$out/share/dialect/exe/$exe" \
+                --set GI_TYPELIB_PATH "${typelibPath}" \
+                --prefix XDG_DATA_DIRS : "$out/share" \
+                --prefix XDG_DATA_DIRS : "$out/share/gsettings-schemas/dialect-0.1.0" \
+                --prefix XDG_DATA_DIRS : "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}" \
+                --prefix XDG_DATA_DIRS : "${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}" \
+                --prefix XDG_DATA_DIRS : "${pkgs.adwaita-icon-theme}/share"
+            done
 
             runHook postInstall
           '';
