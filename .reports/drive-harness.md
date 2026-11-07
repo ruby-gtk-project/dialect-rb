@@ -7,7 +7,8 @@ asserts every component the port claims, and writes screenshots to
 
     nix develop --command xvfb-run -a ruby test/drive_dialect.rb
 
-Last run: **536 of 536 checks passed — DRIVE OK**, 42 steps, 9 screenshots.
+Last run (2026-11-07): **536 of 536 checks passed — DRIVE OK**, 42 steps, 9
+screenshots, confirmed over two consecutive clean runs.
 
 ## What it covers
 
@@ -91,6 +92,49 @@ cannot be mistaken for covering it:
 7. `Gtk::Widget#visible?` answers `gtk_widget_is_visible`, not the widget's own
    flag, so it is false for everything inside a popover that has never been
    shown. Checks on popover contents read the `visible` property instead.
+8. A `GLib::Object` subclass whose state lives in plain Ruby ivars loses that
+   state across a GC cycle once nothing on the Ruby side holds a direct
+   reference to it any more — the ruby-gnome bindings hand back a freshly
+   rewrapped Ruby object around the same underlying GObject on the next
+   `Gio::ListStore#get_item`, and `initialize` never runs on it again. Found
+   via `LangObject` (`lib/languages.rb`): a language selector's search
+   narrowing the list to one match and then widening it again came back with
+   `name`/`code` reading `nil` for every language besides the one still held
+   alive elsewhere (the one currently selected), which a `Gtk::StringFilter`
+   then has nothing to match against. `LanguagesListModel` and
+   `ProvidersListModel` now each keep their own items in a plain Ruby array
+   for as long as their `Gio::ListStore` does, which is enough to keep them
+   alive regardless of what GTK currently has on screen. Written up in full,
+   with a minimal reproduction outside any widget, in
+   `.reports/langobject-gc.md`.
+9. `Gio::Error` (the hierarchy `Gio::IOError::ConnectionRefused` and
+   `Gio::IOError::PartialInput` come from) is not a `GLib::Error` — the two
+   only share `GLib::ErrorInfo` as a common ancestor, they are not one a
+   subclass of the other. `Session::NETWORK_ERRORS` in `lib/session.rb`
+   caught only `GLib::Error`, so a transport failure surfacing through GIO's
+   own hierarchy instead of libsoup's came back as a raw, unconverted
+   exception rather than a `ResponseError`. Added `Gio::Error` to the list.
+10. This sandbox's network stack does not refuse a connection to a privileged,
+    nothing-listening port (`127.0.0.1:1`) the way a real kernel does. The
+    first drive run routed that attempt somewhere that wedged the forked
+    `HttpProbe`'s single-threaded accept loop on a connection that never sent
+    anything, so every real request to the probe after the first "refused"
+    one then failed for real. `test/drive_dialect.rb` now provokes a refused
+    connection with an unprivileged ephemeral port it just vacated instead,
+    which the kernel refuses cleanly and which disturbs nothing else. This is
+    an environment artifact, not a port bug — recorded here because it is
+    exactly the kind of failure that looks like flakiness until traced.
+11. `HttpProbe#response_for`'s `/flaky` branch read `@hits["/flaky"]`, an ivar
+    that was never initialized anywhere in the class — the surrounding
+    comment describes hit counts going through the log file instead, which
+    is what `HttpProbe#hits` already does, but `response_for` itself was
+    never updated to match. Every request to `/flaky` raised a silent
+    `NoMethodError` inside the forked child, which `accept_loop`'s
+    `rescue StandardError; nil` swallowed, closing the socket with no
+    response ever written — "Connection terminated unexpectedly" on the
+    client side, every time, not just on a flaky fraction of requests. This
+    is why the retry-policy checks never actually exercised a retry. Fixed
+    by counting `/flaky` hits off the log file, the same way `#hits` does.
 
 ## Known gap: there is no spec suite
 

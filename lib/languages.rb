@@ -94,6 +94,23 @@ class LanguagesListModel
 
   def initialize(names_func: Languages.method(:lang_name))
     @names_func = names_func
+    # Every LangObject the store currently holds, kept alive on the Ruby
+    # side.
+    #
+    # `LangObject#code`/`#name` are plain Ruby ivars (see its class comment);
+    # `Gio::ListStore` only holds the underlying GObject, and once nothing on
+    # the Ruby side still references an item — which, for anything the user
+    # has filtered out of a `LangSelector`'s search, is exactly the state
+    # between one GC run and the next — the bindings hand back a freshly
+    # rewrapped Ruby object around that same GObject on the next `get_item`,
+    # with `initialize` never having run on it again, so `code` and `name`
+    # read back `nil`. Observed here as a language selector's search
+    # narrowing the list to one match and then widening it again losing the
+    # names of every language besides the one still selected elsewhere.
+    # Holding each item in this array for as long as the model does, deleted
+    # at the same two sites the store is, keeps the original Ruby object (and
+    # its ivars) alive regardless of what GTK currently has on screen.
+    @items = []
   end
 
   # The Gio::ListModel to hand to GTK widgets.
@@ -116,6 +133,7 @@ class LanguagesListModel
       end
 
       model.splice(0, model.n_items, items)
+      @items = items
     end
   end
 

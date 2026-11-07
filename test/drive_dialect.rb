@@ -211,7 +211,16 @@ class HttpProbe
       when "/moved-get" then redirect(302, "/echo")
       when "/moved-loop" then redirect(308, "/moved-loop")
       when "/flaky"
-        if @hits["/flaky"] < 2
+        # `@hits` was never a thing: each hit is counted off the log file (the
+        # line `serve` just appended for this very request is in it already),
+        # the same way the parent process's own `#hits` reads it back. The
+        # unconditional `@hits["/flaky"]` this replaced called `[]` on a nil
+        # ivar, which raised inside the forked child's `serve`, was swallowed
+        # by `accept_loop`'s rescue, and left the socket closed with no
+        # response ever written — every single request to `/flaky`, not just
+        # a flaky fraction of them, so the retry policy this path exists to
+        # exercise was never actually exercised.
+        if File.readlines(@log_path).count { |line| line.strip == "/flaky" } < 2
           http(429, JSON.generate({"error" => "slow down"}))
         else
           http(200, JSON.generate({"ok" => true}))
@@ -247,6 +256,19 @@ class HttpProbe
 end
 
 PROBE = HttpProbe.new
+
+# A port nothing is listening on, to provoke a genuine refused connection.
+#
+# This binds and immediately closes a TCPServer rather than using a
+# well-known closed port such as 1: this sandbox's network stack intercepts
+# an attempt to connect to a privileged low port and, having nothing of its
+# own to refuse it with, appears to route the attempt into some other
+# process's listening socket instead — observed here as it wedging the
+# forked HttpProbe's single-threaded accept loop on a connection that never
+# sends anything, so every request after the first "refused" one then times
+# out for real. An unprivileged ephemeral port that this process itself just
+# vacated is refused cleanly by the kernel and disturbs nothing else.
+REFUSED_PORT = TCPServer.new('127.0.0.1', 0).then { |s| s.addr[1].tap { s.close } }
 
 # A provider-shaped consumer of SessionHelpers with a retry policy and its own
 # error payload check, which is the contract every real provider relies on.
@@ -1787,7 +1809,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
         raised_by { session.send_and_read("GET", "http://[bad") }.is_a?(ResponseError)
       end
       d.check("a refused connection becomes a ResponseError") do
-        raised_by { session.send_and_read("GET", "http://127.0.0.1:1/x") }.is_a?(ResponseError)
+        raised_by { session.send_and_read("GET", "http://127.0.0.1:#{REFUSED_PORT}/x") }.is_a?(ResponseError)
       end
     end
     d.check("Session.get is process-wide") { Session.get.equal?(Session.get) }
@@ -1816,7 +1838,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
         probe.get(PROBE.url("/denied"), check_common: false)["error"] == "bad key"
       end
       d.check("a transport failure becomes a RequestError") do
-        raised_by { probe.get("http://127.0.0.1:1/x") }.is_a?(RequestError)
+        raised_by { probe.get("http://127.0.0.1:#{REFUSED_PORT}/x") }.is_a?(RequestError)
       end
       d.check("the base check_known_errors accepts everything") do
         Provider.new.get(PROBE.url("/denied"))["error"] == "bad key"

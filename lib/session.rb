@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'gio2'
 require 'json'
 require 'soup3'
 require 'uri'
@@ -97,15 +98,20 @@ class Session
   )
 
   # The failures a send can raise that are not this app's fault: libsoup's
-  # own transport errors (connection refused, DNS failure, TLS, …) come back
-  # as a bare GLib::Error (itself a RuntimeError in this binding, so the
-  # second entry is redundant for those — it is kept because a URL libsoup's
-  # own parser rejects outright, such as an unbalanced IPv6 literal, fails
-  # inside Soup::Message.new itself with a plain RuntimeError that is not a
-  # GLib::Error at all); SocketError and the Errno constants cover the
-  # outcome if the underlying connect ever surfaces as a bare Ruby socket
-  # error instead of a wrapped GLib one.
-  NETWORK_ERRORS = [GLib::Error, RuntimeError, SocketError, SystemCallError].freeze
+  # own transport errors (connection refused, DNS failure, TLS, …) usually
+  # come back as a bare GLib::Error (itself a RuntimeError in this binding, so
+  # the second entry is redundant for those — it is kept because a URL
+  # libsoup's own parser rejects outright, such as an unbalanced IPv6 literal,
+  # fails inside Soup::Message.new itself with a plain RuntimeError that is
+  # not a GLib::Error at all). Some transport failures surface through GIO's
+  # own hierarchy instead — connecting to a closed low port was observed to
+  # raise Gio::IOError::PartialInput ("Connection terminated unexpectedly")
+  # rather than GLib::Error's "Connection refused", and Gio::Error is a
+  # sibling of GLib::Error (both mix in GLib::ErrorInfo), not a subclass of
+  # it, so it needs its own entry here. SocketError and the Errno constants
+  # cover the outcome if the underlying connect ever surfaces as a bare Ruby
+  # socket error instead of a wrapped GLib/GIO one.
+  NETWORK_ERRORS = [GLib::Error, Gio::Error, RuntimeError, SocketError, SystemCallError].freeze
 
   # The process-wide session, matching upstream's Session.get().
   def self.get = @instance ||= new

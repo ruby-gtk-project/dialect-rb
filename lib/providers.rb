@@ -143,7 +143,14 @@ class ProvidersListModel
 
   def model
     @model ||= Gio::ListStore.new(ProviderObject).tap do |store|
-      store.splice(0, 0, provider_objects)
+      # Kept alive on the Ruby side for as long as the store holds them — see
+      # LangObject's class comment in languages.rb for why a GLib::Object
+      # subclass whose state lives in a plain Ruby ivar (here, `@provider_class`)
+      # needs this: without a live Ruby reference, the bindings rewrap the
+      # same GObject fresh on the next `get_item`, with `initialize` never
+      # having run on it again, so `@provider_class` reads back `nil`.
+      @items = provider_objects
+      store.splice(0, 0, @items)
     end
   end
 
