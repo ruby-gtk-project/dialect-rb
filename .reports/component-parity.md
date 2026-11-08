@@ -2,80 +2,83 @@
 
 Builds on `.reports/component-identification.md` and the standing 37-unit map
 in `.reports/component-inventory.md`. Per unit: does the port's component do
-what upstream's does, not just exist. Re-verified against the tree as of
-`c3fcdf9` ("Wire the already-ported SpeechButton into the window toolbars"),
-the most recent widget-touching commit on `ruby`.
+what upstream's does, not just exist. Re-verified against the tree at
+`fc10569` ("Fix accel check comparing against GTK's canonical spelling,
+confirm DRIVE OK"), the tip of `ruby` this round, three commits past the
+previous audit's `c3fcdf9`.
 
-## Verified at parity (35 of 37 units, unchanged from the prior round)
+## Unit 11 (text-to-speech): closed this round
 
-Units 1–10, 12–36 are present and behave the same: window states, both
-language selectors, the theme switcher, the two `GtkSource::View`-backed text
-views, the preferences dialog and subpage, the About dialog, all seven
-providers, the HTTP session, the async helper, the stylesheet loader, the
-icon assets, and the GNOME Shell search provider.
+The previous round's open gap — no `listen-src`/`listen-dest` actions, no
+accelerators, no Text-to-Speech `ShortcutsGroup` — is closed by `bc3e087` and
+confirmed by `fc10569`'s fix to the check that verifies it (see
+`accountability-ensurance.md` for why that check needed fixing in its own
+right, not just the underlying feature). Read directly against the current
+tree:
 
-Independently re-driven this round:
+- `win.listen-src`/`win.listen-dest` are registered, disabled by default,
+  dispatched through the window's action table (`lib/window.rb`).
+- `<Primary>L` / `<Primary><Shift>L` are bound in `lib/main.rb`, matching
+  `main.py`.
+- `ShortcutsWindow::SECTIONS` has upstream's four groups, with the
+  Text-to-Speech group's two rows matching `shortcuts.blp:60-71`.
+- `#load_tts`/`#check_speech_enabled` reproduce `window.py`'s
+  `load_tts`/`_check_speech_enabled`: the action is enabled only when the
+  active provider's `tts_languages` cover the current selection and there is
+  text present.
 
-    nix develop --command xvfb-run -a ruby test/drive_dialect.rb
-    → 547 of 547 checks passed / DRIVE OK
+What remains out of scope, correctly: actual audio playback, because there is
+no Gst typelib in this dev shell and `Gst.ElementFactory.make` returning
+`nil` is a case upstream's own handler already takes the same early exit on.
+Unit 11 now has **behavioral** parity for everything the environment can
+exercise; only the one piece neither side of the comparison can run in this
+sandbox is left open, and it is open on both sides symmetrically, not just
+the port's.
 
-This took roughly 15 minutes of wall-clock time to complete on this machine —
-dozens of other forks' `xvfb-run`/`ruby` processes were running concurrently
-(`ps aux` showed 36+ Xvfb-related processes at one point) and a first attempt
-under an external `timeout 300` never produced output before being killed.
-A second, unconstrained run against the identical tree did complete and
-matches the gate's own claim (`drive_ok=true`, 547/547, 37 components)
-exactly. Noted here because it reproduces, now for the second round running,
-the exact non-determinism `test-parity.md` and `accountability-ensurance.md`
-flagged last round — it is environmental (shared-machine contention), not a
-regression in the port, but a drive run that only completes reliably when
-nobody else happens to be using the machine is not a drive run anyone outside
-this fleet can treat as "it just passes."
+**Verdict: unit 11 is at parity.** This closes the last round's Gap 1.
 
-## Gap 1 — unit 11, text-to-speech: narrower than last round, but still a real gap
+## Unit 37 (live translation / gettext): unchanged, still open
 
-What changed: `lib/speech_button.rb`'s `SpeechButton` is now instantiated
-twice (`src_speech_btn`, `dest_speech_btn`) and appended into both toolbars in
-upstream's slots. That part of the previous finding is closed.
+Covered fully in `translation-parity.md`. 0 of 123 msgids are reachable at
+runtime; every label, menu item, dialog title and error message in the port
+remains a hardcoded English literal. No commit in this round's range touches
+it. **Gap, unchanged.**
 
-What is still missing, confirmed against `window.py:179-200` and
-`shortcuts.blp:60-71`:
+## New this round, found while re-reading: a disclosed but real behavioral gap in the HTTP session (not a counted unit, but worth a row)
 
-- **`win.listen-src` / `win.listen-dest` actions** — upstream always
-  registers both (disabled by default, enabled per-provider); the port
-  registers neither. `grep -n listen lib/window.rb` shows zero `add_action`
-  calls for either name.
-- **The `<Primary>L` / `<Primary><Shift>L` accelerators** — bound to nothing,
-  since the actions they'd target don't exist.
-- **The Text-to-Speech `ShortcutsGroup`** — two rows ("Listen to source
-  text", "Listen to translation") that upstream's shortcuts window always
-  shows (disabled-looking accelerators or not) are absent from the port's
-  shortcuts dialog entirely; `ShortcutsWindow::SECTIONS` has 3 keys where
-  upstream's `shortcuts.blp` has 4 groups.
-- Both buttons are permanently `visible = false` — there is no live path by
-  which a user of this port ever sees them, regardless of which provider is
-  selected, where upstream shows/hides them per-provider's TTS support.
+`lib/session.rb`'s own header comment (surfaced by the accountability grep)
+states plainly that the port's `Session` calls soup3's synchronous
+`#send_and_read` from inside `BackgroundTask`'s worker thread, and that this
+call does not release Ruby's GVL for its duration — confirmed in the comment
+against a same-process loopback server on a second thread that never got
+scheduled to answer until the request timed out. Upstream's asyncio
+coroutines suspend cooperatively and never hold the process this way.
+Concretely: **a real translation request in this port can stall the whole
+process, including the GTK main loop, for the length of that request** — not
+merely the worker thread upstream's coroutine model would have kept it to.
 
-**User-visible effect, same as last round:** nobody using this port can
-invoke text-to-speech by click or by keyboard, and the keyboard-shortcuts
-reference no longer even lists that the feature exists. The widget being
-`append`ed but permanently hidden is closer to upstream's shape than last
-round's "not instantiated at all," but it does not change the user-facing
-verdict: the feature is still entirely non-functional and now also removed
-from the shortcuts window's own listing of what exists.
-
-## Gap 2 — unit 37, live translation (gettext)
-
-Unchanged, covered fully in `translation-parity.md`: every label, menu item,
-dialog title and error message in the port is a hardcoded English literal.
-0 of 123 msgids are reachable at runtime. Recorded here because it is a
-component-behavior gap across all 35 "present" units above, not a separate
-37th unit in isolation.
+This is disclosed, in detail, in the source itself (not hidden, not an
+excuse-word match — see `accountability-ensurance.md`), and it is explicitly
+named as "out of scope for this round" by the commit that wrote it. That
+makes it an honest gap rather than a false claim. But it is still a real,
+user-facing behavioral difference from upstream — a provider that's slow to
+respond freezes the UI in the port in a way it does not upstream — and
+**nothing in `test/drive_dialect.rb`'s 557 checks can catch it**, because the
+drive harness's own `DriveProvider` answers from an in-memory array with no
+real I/O at all. This is exactly the task's framing: a component — the
+session's behavior under a real, slow network call — that no check
+exercises is unverified, not done, regardless of how green the rest of the
+suite is. Recorded here as a parity gap in the interaction between units
+20–23 (provider framework) and 31 (`Session`), not as a widget-count gap on
+either unit's row.
 
 ## Verdict
 
-2 of 37 units still have a real, user-visible behavior gap. Neither is new
-this round, though unit 11's shape changed (widget now present but inert, and
-a specific missing shortcuts group is now named explicitly rather than folded
-into "no actions"). No regression found; no new previously-undocumented gap
-beyond the shortcuts-group item above.
+1 of 37 units still has an open, undisclosed-nowhere-else-as-closed gap
+(unit 37, translation) — unchanged from last round. Unit 11 (text-to-speech),
+the previous round's other open gap, is closed. One new finding this round
+is a real behavioral difference (session blocking under real I/O) that is
+honestly disclosed in the source but not exercised by any check and not
+previously recorded in this ledger — it is added here now. Net: fewer open
+component gaps than last round (1 vs. 2), plus one newly-surfaced,
+honestly-disclosed-but-unverified behavioral gap.
