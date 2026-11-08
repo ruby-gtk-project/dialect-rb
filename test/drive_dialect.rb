@@ -328,6 +328,17 @@ rescue StandardError, ScriptError => exc
   exc
 end
 
+# `get_accels_for_action` hands back GTK's own canonical spelling, not the one
+# `set_accels_for_action` was given: `<Primary>` resolves to the platform's
+# actual modifier (`<Control>` here) and the keyval's name is lowercased. A
+# check that compares against the literal string main.rb wrote would pass by
+# accident on no platform at all, so accelerators are compared through this
+# same parse/name round trip on both sides.
+def canonical_accel(spec)
+  _ok, keyval, mods = Gtk.accelerator_parse(spec)
+  Gtk.accelerator_name(keyval, mods)
+end
+
 GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
   d.window { app.window.window }
 
@@ -741,7 +752,7 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     end
     Dialect::Application::ACCELS.each do |action, accels|
       d.check("#{action} is bound to #{accels.join(', ')}") do
-        app.app.get_accels_for_action(action).length == accels.length
+        app.app.get_accels_for_action(action) == accels.map { |spec| canonical_accel(spec) }
       end
     end
   end
@@ -1959,8 +1970,8 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
       app.window.window.has_action?("listen-src") && app.window.window.has_action?("listen-dest")
     end
     d.check("win.listen-dest is bound to <Primary>L, win.listen-src to <Primary><Shift>L") do
-      app.app.get_accels_for_action("win.listen-dest") == ["<Primary>L"] &&
-        app.app.get_accels_for_action("win.listen-src") == ["<Primary><Shift>L"]
+      app.app.get_accels_for_action("win.listen-dest") == [canonical_accel("<Primary>L")] &&
+        app.app.get_accels_for_action("win.listen-src") == [canonical_accel("<Primary><Shift>L")]
     end
     d.check("the four upstream stack pages exist on each button") do
       %w[ready progress error loading].all? do |page|

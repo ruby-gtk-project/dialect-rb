@@ -7,8 +7,26 @@ asserts every component the port claims, and writes screenshots to
 
     nix develop --command xvfb-run -a ruby test/drive_dialect.rb
 
-Last run (2026-11-07): **536 of 536 checks passed — DRIVE OK**, 42 steps, 9
-screenshots, confirmed over two consecutive clean runs.
+Last run (2026-11-08): **557 of 557 checks passed — DRIVE OK**, 45 steps, 9
+screenshots.
+
+The commit before this one (`bc3e087`, wiring `win.listen-src`/`win.listen-dest`)
+landed without a full re-run, by its own admission — the full suite was
+started but the round's time budget ran out first. Running it for real here
+turned up one genuine failure: `win.listen-dest is bound to <Primary>L,
+win.listen-src to <Primary><Shift>L` failed because `Gtk::Application#get_accels_for_action`
+hands back GTK's own canonical spelling of an accelerator, not the literal
+string `set_accels_for_action` was given — `<Primary>` resolves to the
+platform's real modifier (`<Control>` here) and the keyval is lowercased, so
+the getter returned `["<Control>l"]` / `["<Shift><Control>l"]`, not
+`["<Primary>L"]` / `["<Primary><Shift>L"]`. Confirmed deterministic with a
+10-tick standalone repro (not a timing race). This was a test bug, not a port
+bug: the accelerators themselves work. Fixed by adding a `canonical_accel`
+helper in `test/drive_dialect.rb` that round-trips a spec through
+`Gtk.accelerator_parse`/`Gtk.accelerator_name` and comparing against that on
+both sides of the check (and tightening the same-shaped but weaker
+`ACCELS.each` check next to it, which only compared array lengths and so
+never actually verified the accelerator strings).
 
 ## What it covers
 
