@@ -32,20 +32,20 @@ require_relative 'utils'
 # stands; the Ruby bindings have MultiLayoutView, Layout and LayoutSlot, and
 # they behave as the C API does.
 #
-# Three deliberate departures, each forced by what this machine's bindings
+# Two deliberate departures, each forced by what this machine's bindings
 # ship, and each one named in the port's notes rather than papered over:
 #
-# * Text-to-speech playback is left out. Upstream plays the provider's audio
-#   through a GStreamer playbin, and there is no Gst typelib in the dev shell,
-#   so there is nothing to play it with. The `listen-src`/`listen-dest`
-#   actions and the Text-to-Speech shortcuts group go with it: an action wired
-#   to playback that cannot work is worse than no action. The SpeechButton
-#   widget itself (see speech_button.rb) is still built into both toolbars,
-#   in the same slots upstream's window.blp puts them, because that mirrors
-#   what upstream's own window.py does when no TTS provider is configured:
-#   `load_tts` hides `src_speech_btn`/`dest_speech_btn` outright rather than
-#   leaving them half-wired. #src_speech_btn and #dest_speech_btn start
-#   hidden here for the same reason, not because the widget is unfinished.
+# * Text-to-speech *playback* is left out, not the feature around it.
+#   Upstream's own `_on_speech` already tolerates a missing player — it builds
+#   `self.player` with `Gst.ElementFactory.make("playbin", ...)`, which can
+#   come back nil when the plugin is absent, and bails out before fetching or
+#   playing anything when it has (`if ... or not self.player: return`). This
+#   dev shell has no Gst typelib at all, so #player is permanently nil here,
+#   and #on_listen_action takes the exact same early exit upstream's own code
+#   does in that case. Everything upstream builds around that call — the
+#   `listen-src`/`listen-dest` actions, their accelerators, the TTS provider
+#   load in #load_tts, and the Text-to-Speech shortcuts group — is ported for
+#   real, because none of it needs a player to be correct.
 #   (Spell checking, upstream's other libspelling-reader, is wired for real —
 #   see #setup_spell_checking — because the libspelling and gtksourceview5
 #   gems exist and the src text view is a GtkSource::View; see text_view.rb.)
@@ -81,9 +81,11 @@ class Window
     'font-size-dec'     => true,
     'paste'             => true,
     'copy'              => false,
+    'listen-dest'       => false,
     'suggest'           => false,
     'suggest-ok'        => true,
     'suggest-cancel'    => true,
+    'listen-src'        => false,
     'translation'       => false,
     'show-help-overlay' => true,
   }.freeze
@@ -112,6 +114,11 @@ class Window
     @selection_translation_queued = false
     @selection_translation_langs = [nil, nil]
     @loading_observers = []
+    @speech_provider_failed = false
+    # Upstream's self.player, from Gst.ElementFactory.make("playbin", ...).
+    # There is no Gst typelib in this dev shell to make one with, so this
+    # stays nil for the life of the window — see the class comment.
+    @player = nil
   end
 
   def build
@@ -165,6 +172,7 @@ class Window
       end
 
       load_translator
+      load_tts
     end
   end
 
@@ -197,7 +205,7 @@ class Window
   def reload_provider(kind)
     case kind
     when 'translator' then load_translator
-    when 'tts' then nil
+    when 'tts' then load_tts
     end
   end
 
@@ -280,6 +288,25 @@ class Window
         src_pron_revealer.reveal_child = false
         dest_pron_revealer.reveal_child = false
       end
+    end
+  end
+
+  # Reveals or hides the two speech buttons and enables their actions only
+  # when a provider's TTS language list says they can speak the current
+  # selection, upstream's load_tts and _check_speech_enabled. The application
+  # calls this when the user switches the active TTS provider in preferences.
+  def check_speech_enabled
+    with_tts do |tts|
+      enable_action(
+        'listen-src',
+        @speech_provider_failed ||
+          (tts.tts_languages.include?(src_lang_selector.selected) && !src_text.char_count.zero?),
+      )
+      enable_action(
+        'listen-dest',
+        @speech_provider_failed ||
+          (tts.tts_languages.include?(dest_lang_selector.selected) && !dest_text.char_count.zero?),
+      )
     end
   end
 
@@ -563,12 +590,12 @@ class Window
   def clear_btn = @clear_btn ||= action_button('win.clear', 'Clear', 'edit-clear-symbolic')
   def paste_btn = @paste_btn ||= action_button('win.paste', 'Paste', 'edit-paste-symbolic')
 
-  # No `listen-src` action exists (see the class comment), and upstream hides
-  # this button outright whenever no TTS provider is loaded, so it starts
-  # hidden rather than wired to an action that cannot work.
+  # Starts hidden; #load_tts reveals it once a TTS provider is configured,
+  # matching upstream's own load_tts rather than hardcoding visible = false.
   def src_speech_btn
     @src_speech_btn ||= SpeechButton.new.build.tap do |button|
       button.add_css_class('flat')
+      button.action_name = 'win.listen-src'
       button.visible = false
     end
   end
@@ -646,10 +673,11 @@ class Window
 
   def edit_btn = @edit_btn ||= action_button('win.suggest', 'Suggest Translation', 'document-edit-symbolic')
 
-  # Same reasoning as #src_speech_btn: no `listen-dest` action, starts hidden.
+  # Same reasoning as #src_speech_btn.
   def dest_speech_btn
     @dest_speech_btn ||= SpeechButton.new.build.tap do |button|
       button.add_css_class('flat')
+      button.action_name = 'win.listen-dest'
       button.visible = false
     end
   end
@@ -999,9 +1027,11 @@ class Window
       when 'font-size-dec' then src_text.font_size_dec
       when 'paste' then on_paste_action
       when 'copy' then on_copy_action
+      when 'listen-dest' then on_dest_listen_action
       when 'suggest' then on_suggest_action
       when 'suggest-ok' then on_suggest_ok_action
       when 'suggest-cancel' then on_suggest_cancel_action
+      when 'listen-src' then on_src_listen_action
       when 'translation' then run_translation
       when 'show-help-overlay' then shortcuts_window.present(window)
       end
@@ -1290,6 +1320,82 @@ class Window
       reload_provider('translator')
     end
 
+    # Upstream's load_tts: builds the configured TTS provider (or none), and
+    # reveals the speech buttons only once one is actually loaded, rather than
+    # the port hardcoding them hidden.
+    def load_tts
+      src_speech_btn.loading
+      dest_speech_btn.loading
+
+      Providers::TTS[settings.active_tts].then do |provider_class|
+        if provider_class.nil?
+          @provider['tts'] = nil
+          src_speech_btn.visible = false
+          dest_speech_btn.visible = false
+        else
+          start_tts_load(provider_class.new)
+        end
+      end
+    end
+
+    def start_tts_load(tts)
+      @provider['tts'] = tts
+      src_speech_btn.visible = true
+      dest_speech_btn.visible = true
+
+      BackgroundTask.run(
+        on_success: ->(_result) { finish_tts_load },
+        on_error:   ->(exc) { fail_tts_load(exc) },
+      ) { tts.init_tts }
+    end
+
+    def finish_tts_load
+      @speech_provider_failed = false
+      src_speech_btn.ready
+      dest_speech_btn.ready
+      check_speech_enabled
+    end
+
+    def fail_tts_load(exc)
+      @speech_provider_failed = true
+      message = 'Text-to-Speech failed. Retry?'
+      src_speech_btn.error(message)
+      dest_speech_btn.error(message)
+
+      send_notification(
+        if exc.is_a?(RequestError)
+          'Failed loading the text-to-speech service, check for network issues'
+        else
+          'Failed loading the text-to-speech service'
+        end,
+      )
+
+      check_speech_enabled
+    end
+
+    # Upstream's _on_src_listen_action / _on_dest_listen_action, through
+    # _on_speech. A retry re-loads the provider; otherwise this takes the same
+    # early exit upstream's own code does when `self.player` is nil — see the
+    # class comment.
+    def on_src_listen_action = on_listen_action
+    def on_dest_listen_action = on_listen_action
+
+    def on_listen_action
+      if @speech_provider_failed
+        load_tts
+      end
+    end
+
+    # Runs the block with the live TTS provider, or does nothing when there is
+    # none, mirroring #with_trans.
+    def with_tts
+      @provider['tts'].then do |tts|
+        if tts
+          yield tts
+        end
+      end
+    end
+
     # --- history ---------------------------------------------------------
 
     def add_history_entry(translation)
@@ -1421,6 +1527,7 @@ class Window
         end
 
         check_switch_enabled
+        check_speech_enabled
       end
     end
 
@@ -1438,6 +1545,7 @@ class Window
         end
 
         check_switch_enabled
+        check_speech_enabled
       end
     end
 
@@ -1643,6 +1751,7 @@ class Window
 
           enable_action('translation', !char_count.zero?)
           enable_action('clear', !char_count.zero?)
+          check_speech_enabled
         end
       end
     end
@@ -1663,6 +1772,8 @@ class Window
           enable_action('copy', sensitive)
           enable_action('suggest', trans.supports_suggestions? && sensitive)
         end
+
+        check_speech_enabled
       end
     end
 

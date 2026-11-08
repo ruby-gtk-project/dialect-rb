@@ -30,7 +30,7 @@ require_relative 'settings'
 class ShortcutsWindow < Adwaita::ShortcutsDialog
   # Upstream's ShortcutsGroups, in order, as title => { label => action }.
   SECTIONS = {
-    'Translator' => {
+    'Translator'      => {
       'Switch Languages'            => 'win.switch',
       'Select source language'      => 'win.from',
       'Select destination language' => 'win.to',
@@ -40,11 +40,15 @@ class ShortcutsWindow < Adwaita::ShortcutsDialog
       'Increase font size'          => 'win.font-size-inc',
       'Decrease font size'          => 'win.font-size-dec',
     },
-    'Navigation' => {
+    'Text-to-Speech'  => {
+      'Listen to source text' => 'win.listen-src',
+      'Listen to translation' => 'win.listen-dest',
+    },
+    'Navigation'      => {
       'Go back in history'    => 'win.back',
       'Go forward in history' => 'win.forward',
     },
-    'General'    => {
+    'General'         => {
       'Preferences' => 'app.preferences',
       'Shortcuts'   => 'win.show-help-overlay',
       'Quit'        => 'app.quit',

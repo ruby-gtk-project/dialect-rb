@@ -51,8 +51,7 @@ module Dialect
     DONATE_URL = 'https://opencollective.com/dialect'
 
     # Upstream's set_accels_for_action calls, as detailed action name =>
-    # accelerators. The `listen-src` and `listen-dest` pair upstream also
-    # binds is left out with the rest of text-to-speech; see window.rb.
+    # accelerators.
     ACCELS = {
       'app.pronunciation'     => ['<Primary>P'],
       'app.preferences'       => ['<Primary>comma'],
@@ -67,6 +66,8 @@ module Dialect
       'win.font-size-dec'     => ['<Primary>minus', '<Primary>KP_Subtract'],
       'win.paste'             => ['<Primary><Shift>V'],
       'win.copy'              => ['<Primary><Shift>C'],
+      'win.listen-dest'       => ['<Primary>L'],
+      'win.listen-src'        => ['<Primary><Shift>L'],
       'win.show-help-overlay' => ['<Primary>question'],
     }.freeze
 

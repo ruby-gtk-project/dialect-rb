@@ -744,10 +744,6 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
         app.app.get_accels_for_action(action).length == accels.length
       end
     end
-    d.check("nothing is bound to the text-to-speech actions, which are not ported") do
-      app.app.get_accels_for_action("win.listen-src").empty? &&
-        app.app.get_accels_for_action("win.listen-dest").empty?
-    end
   end
 
   # --- 14. the source toolbar: clear, paste, counter, translate -------------
@@ -973,7 +969,13 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     app.window.shortcuts_window.then do |dialog|
       d.check("it is an Adwaita::ShortcutsDialog") { dialog.is_a?(Adwaita::ShortcutsDialog) }
       d.check("it is titled Keyboard Shortcuts") { dialog.title == "Keyboard Shortcuts" }
-      d.check("it has upstream's three groups") { ShortcutsWindow::SECTIONS.length == 3 }
+      d.check("it has upstream's four groups") { ShortcutsWindow::SECTIONS.length == 4 }
+      d.check("the Text-to-Speech group lists both listen shortcuts") do
+        ShortcutsWindow::SECTIONS["Text-to-Speech"] == {
+          "Listen to source text" => "win.listen-src",
+          "Listen to translation" => "win.listen-dest",
+        }
+      end
       d.check("the Translate row carries the chosen accelerator") do
         dialog.translate_item.accelerator == Settings.get.translate_accel
       end
@@ -986,6 +988,9 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     d.check("the Translator group holds the Translate row plus its actions") do
       app.window.shortcuts_window.sections.first.n_items ==
         ShortcutsWindow::SECTIONS["Translator"].length + 1
+    end
+    d.check("the second group is Text-to-Speech, with its two action rows") do
+      app.window.shortcuts_window.sections[1].n_items == ShortcutsWindow::SECTIONS["Text-to-Speech"].length
     end
     Settings.get.live_translation = true
     d.check("live translation drops the Translate row, as upstream hides it") do
@@ -1921,15 +1926,16 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
   # without being driven.
 
   d.step("the components this round leaves out are absent, not half-built") do
-    # Text-to-speech playback: no Gst typelib in the dev shell, so there is
-    # nothing to play a provider's audio with. No action is registered for
-    # either button; see window.rb's class comment.
-    %w[listen-src listen-dest].each do |name|
-      d.check("win.#{name} is not registered") { !app.window.window.has_action?(name) }
-    end
+    # Text-to-speech playback itself: no Gst typelib in the dev shell, so
+    # #player (upstream's self.player) stays nil for the window's whole life
+    # and nothing is ever actually played. The listen actions, their
+    # accelerators and the speech buttons' reachability are driven for real
+    # above, in "text-to-speech loads the default provider...".
+    d.check("the window never builds a Gst player") { app.window.instance_variable_get(:@player).nil? }
   end
 
-  d.step("the speech button widget is built in but starts inert") do
+  d.step("text-to-speech loads the default provider and the speech buttons become reachable") do
+    pump(500)
     d.check("SpeechButton is defined") { Object.const_defined?(:SpeechButton) }
     d.check("both buttons are instances of it") do
       app.window.src_speech_btn.is_a?(SpeechButton) && app.window.dest_speech_btn.is_a?(SpeechButton)
@@ -1946,8 +1952,15 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
              .any? { |child| child.css_classes.include?("speech-button") }
       end
     end
-    d.check("both start hidden, matching upstream's no-TTS-provider state") do
-      !app.window.src_speech_btn.visible? && !app.window.dest_speech_btn.visible?
+    d.check("both become visible, since settings default the TTS provider to google") do
+      app.window.src_speech_btn.visible? && app.window.dest_speech_btn.visible?
+    end
+    d.check("win.listen-src and win.listen-dest are registered") do
+      app.window.window.has_action?("listen-src") && app.window.window.has_action?("listen-dest")
+    end
+    d.check("win.listen-dest is bound to <Primary>L, win.listen-src to <Primary><Shift>L") do
+      app.app.get_accels_for_action("win.listen-dest") == ["<Primary>L"] &&
+        app.app.get_accels_for_action("win.listen-src") == ["<Primary><Shift>L"]
     end
     d.check("the four upstream stack pages exist on each button") do
       %w[ready progress error loading].all? do |page|
@@ -1968,6 +1981,28 @@ GtkDriver.drive(Dialect::Application.new, shots: SHOTS) do |d, app|
     d.check("the broken-speakers icon is carried for the error state") do
       Gtk::IconTheme.get_for_display(Gdk::Display.default)
                     .has_icon?("dialect-speakers-broken-symbolic")
+    end
+
+    app.window.dest_lang_selector.selected = "es"
+    app.window.dest_text.text = "hola"
+    pump(300)
+    d.check("a TTS-supported destination language with text enables win.listen-dest") do
+      app.window.window.lookup_action("listen-dest").enabled?
+    end
+    d.check("activating it takes the same early exit upstream's own _on_speech takes when " \
+            "its Gst playbin is nil, so nothing raises") do
+      app.window.window.activate_action("listen-dest", nil)
+      pump(300)
+      true
+    end
+    d.check("the button is left ready, not stuck loading, since nothing was ever played") do
+      !app.window.dest_speech_btn.progress_bar.visible?
+    end
+
+    app.window.dest_text.text = ""
+    pump(300)
+    d.check("clearing the text disables win.listen-dest again") do
+      !app.window.window.lookup_action("listen-dest").enabled?
     end
   end
 
