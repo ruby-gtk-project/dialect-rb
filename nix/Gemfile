@@ -9,8 +9,8 @@
 source "https://rubygems.org"
 
 gem "adwaita"
-gem "gtk4"
 gem "glib2"
+gem "gtk4"
 gem "gtksourceview5"
 gem "libspelling"
 gem "soup3"

@@ -96,13 +96,9 @@ Gem::Specification.new do |spec|
   spec.executables = ["dialect", "dialect-search-provider"]
   spec.require_paths = ["lib"]
 
-  # Runtime toolkit. The app is a GTK4/Libadwaita window, so these three load
-  # it; soup3 and libspelling back the HTTP session and the spell checker,
-  # replacing what earlier rounds of this port hand-rolled because no Ruby
-  # binding existed for libsoup or libspelling.
+  spec.add_dependency("adwaita")
   spec.add_dependency("glib2")
   spec.add_dependency("gtk4")
-  spec.add_dependency("adwaita")
   spec.add_dependency("gtksourceview5")
   spec.add_dependency("libspelling")
   spec.add_dependency("soup3")
